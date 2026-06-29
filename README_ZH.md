@@ -2,7 +2,7 @@
 
 <a href="README.md">🇬🇧 English</a> | <a href="README_ZH.md">🇨🇳 中文版</a>
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/) [![PyPI](https://img.shields.io/pypi/v/broadcastx.svg)](https://pypi.org/project/broadcastx/)
 
 发现、监控并下载 X/Twitter 用户时间线中的直播视频。
 
