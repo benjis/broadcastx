@@ -326,22 +326,49 @@ async def monitor_user(
     once: bool = False,
 ) -> None:
     """Monitor a user profile for a current live broadcast."""
-    username = username.lstrip("@")
+    await monitor_users(
+        usernames=[username],
+        check_interval=check_interval,
+        live_interval=live_interval,
+        headless=headless,
+        output_file=output_file,
+        output_dir=output_dir,
+        browser=browser,
+        download=download,
+        once=once,
+    )
+
+
+async def monitor_users(
+    usernames: list[str],
+    check_interval: int = 30 * 60,
+    live_interval: int = 5 * 60,
+    headless: bool = False,
+    output_file: Path | str | None = None,
+    output_dir: Path | str | None = None,
+    browser: str = DEFAULT_BROWSER,
+    download: bool = True,
+    once: bool = False,
+) -> None:
+    """Monitor multiple user profiles for live broadcasts using a single Chromium profile."""
+    usernames = [u.lstrip("@") for u in usernames]
     output_path = Path(output_file) if output_file else DEFAULT_OUTPUT_DIR / "monitor_events.json"
     video_dir = Path(output_dir) if output_dir else DEFAULT_VIDEOS_DIR
     seen_completed: set[str] = set()
+    live_candidates: dict[str, BroadcastCandidate] = {}
 
     try:
         from playwright.async_api import async_playwright
     except ImportError:
         console.print("[red]Playwright not installed.[/red]")
-        console.print("Run: [bold]pip install playwright && playwright install chromium[/bold]")
+        console.print("Run: [bold]uv sync && uv run playwright install chromium[/bold]")
         return
 
     profile_dir = Path.home() / ".broadcastx" / "chrome-profile"
     profile_dir.mkdir(parents=True, exist_ok=True)
 
-    console.print(f"[bold]Monitoring @{username} for live broadcasts[/bold]")
+    console.print(f"[bold]Monitoring {len(usernames)} user(s) for live broadcasts[/bold]")
+    console.print(f"  [dim]Users: {', '.join('@' + u for u in usernames)}[/dim]")
     console.print(f"  [dim]Check interval: {check_interval}s | live interval: {live_interval}s[/dim]")
 
     async with async_playwright() as p:
@@ -359,66 +386,73 @@ async def monitor_user(
                 raise SystemExit(1)
 
             while True:
-                console.print(f"[dim]{_now_iso()} checking @{username}...[/dim]")
-                candidates = await _collect_profile_candidates(page, username)
-                live_candidate = None
-                for candidate in candidates:
-                    if candidate.broadcast_id in seen_completed:
-                        continue
-                    if _state_bucket(candidate.state) == "ended":
-                        continue
-                    status = await _check_broadcast_status(page, candidate.url)
-                    if _is_live_candidate_status(status.state):
-                        live_candidate = candidate
-                        break
+                console.print(f"[dim]{_now_iso()} checking {len(usernames)} user(s)...[/dim]")
 
-                if live_candidate is None:
-                    console.print("  [dim]No active broadcast found.[/dim]")
+                for username in usernames:
+                    if username in live_candidates:
+                        continue
+
+                    console.print(f"  [dim]Checking @{username}...[/dim]")
+                    candidates = await _collect_profile_candidates(page, username)
+
+                    for candidate in candidates:
+                        if candidate.broadcast_id in seen_completed:
+                            continue
+                        if _state_bucket(candidate.state) == "ended":
+                            continue
+                        status = await _check_broadcast_status(page, candidate.url)
+                        if _is_live_candidate_status(status.state):
+                            live_candidates[username] = candidate
+                            console.print(f"  [green]Live found for @{username}:[/green] {candidate.url}")
+                            _append_event(output_path, {
+                                "type": "live_found",
+                                "username": username,
+                                "url": candidate.url,
+                                "broadcast_id": candidate.broadcast_id,
+                                "title": candidate.title,
+                                "detected_at": _now_iso(),
+                            })
+                            break
+
+                if not live_candidates:
+                    console.print("  [dim]No active broadcasts found.[/dim]")
                     if once:
                         break
                     await asyncio.sleep(check_interval)
                     continue
 
-                console.print(f"  [green]Live candidate:[/green] {live_candidate.url}")
-                _append_event(output_path, {
-                    "type": "live_found",
-                    "username": username,
-                    "url": live_candidate.url,
-                    "broadcast_id": live_candidate.broadcast_id,
-                    "title": live_candidate.title,
-                    "detected_at": _now_iso(),
-                })
+                for username in list(live_candidates.keys()):
+                    candidate = live_candidates[username]
+                    status = await _check_broadcast_status(page, candidate.url)
+                    console.print(f"  [dim]@{username} {candidate.broadcast_id}: {status.state}[/dim]")
 
-                while True:
-                    await asyncio.sleep(live_interval)
-                    status = await _check_broadcast_status(page, live_candidate.url)
-                    console.print(f"  [dim]Status {live_candidate.broadcast_id}: {status.state}[/dim]")
-                    if not status.is_ended:
-                        continue
-
-                    _append_event(output_path, {
-                        "type": "live_ended",
-                        "username": username,
-                        "url": live_candidate.url,
-                        "broadcast_id": live_candidate.broadcast_id,
-                        "ended_at": _now_iso(),
-                    })
-                    if download:
-                        asyncio.create_task(
-                            _background_download(
-                                live_candidate.url,
-                                video_dir,
-                                browser,
-                                output_path,
-                                username,
-                                live_candidate.broadcast_id,
+                    if status.is_ended:
+                        _append_event(output_path, {
+                            "type": "live_ended",
+                            "username": username,
+                            "url": candidate.url,
+                            "broadcast_id": candidate.broadcast_id,
+                            "ended_at": _now_iso(),
+                        })
+                        if download:
+                            asyncio.create_task(
+                                _background_download(
+                                    candidate.url,
+                                    video_dir,
+                                    browser,
+                                    output_path,
+                                    username,
+                                    candidate.broadcast_id,
+                                )
                             )
-                        )
-                    seen_completed.add(live_candidate.broadcast_id)
-                    live_candidate = None
-                    break
+                        seen_completed.add(candidate.broadcast_id)
+                        del live_candidates[username]
 
-                if once:
+                if live_candidates:
+                    await asyncio.sleep(live_interval)
+                elif once:
                     break
+                else:
+                    await asyncio.sleep(check_interval)
         finally:
             await context.close()

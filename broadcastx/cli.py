@@ -16,7 +16,7 @@ from rich.console import Console
 from . import __version__
 from .config import DEFAULT_BROADCASTS_FILE, DEFAULT_BROWSER, DEFAULT_VIDEOS_DIR
 from .downloader import check_ffmpeg, check_yt_dlp, download_all, download_broadcast
-from .monitor import monitor_user
+from .monitor import monitor_user, monitor_users
 from .pause_detector import detect_pauses, pause_report, trim_intervals
 from .scanner import scan_user
 from .scrape_broadcasts import scrape_broadcasts
@@ -99,7 +99,7 @@ def scrape(username, output, delay, headless, verbose, fresh, auth_token, csrf_t
 
 
 @main.command()
-@click.argument("username")
+@click.argument("usernames", nargs=-1, required=True)
 @click.option("--check-interval", default=30 * 60, help="Seconds between profile checks (default: 1800)")
 @click.option("--live-interval", default=5 * 60, help="Seconds between live-status checks (default: 300)")
 @click.option("--output", "-o", default=None, help="Monitor event JSON file path")
@@ -108,10 +108,11 @@ def scrape(username, output, delay, headless, verbose, fresh, auth_token, csrf_t
 @click.option("--headless/--no-headless", default=False, help="Run browser headless (default: visible)")
 @click.option("--download/--no-download", default=True, help="Download when broadcast ends (default: download)")
 @click.option("--once", is_flag=True, help="Run one detection cycle, useful for testing")
-def monitor(username, check_interval, live_interval, output, output_dir, browser, headless, download, once):
-    """Monitor a profile for current live broadcasts and download ended replays.
+def monitor(usernames, check_interval, live_interval, output, output_dir, browser, headless, download, once):
+    """Monitor profiles for current live broadcasts and download ended replays.
 
-    USERNAME can be with or without @ (e.g., @SpaceX or SpaceX).
+    USERNAMES can be with or without @ (e.g., @SpaceX @NASA or SpaceX NASA).
+    Multiple usernames share a single Chromium profile.
     """
     if download and not check_yt_dlp():
         console.print("[red]✗ yt-dlp not found.[/red]")
@@ -123,8 +124,8 @@ def monitor(username, check_interval, live_interval, output, output_dir, browser
         console.print("  Install with: [bold]brew install ffmpeg[/bold]")
         raise SystemExit(1)
 
-    asyncio.run(monitor_user(
-        username=username,
+    asyncio.run(monitor_users(
+        usernames=list(usernames),
         check_interval=check_interval,
         live_interval=live_interval,
         headless=headless,

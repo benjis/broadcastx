@@ -15,8 +15,13 @@ dependencies = [
 broadcastx = "broadcastx.cli:main"
 
 [build-system]
-requires = ["setuptools>=68.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[tool.setuptools.packages.find]
-include = ["broadcastx*"]
+[tool.hatch.build.targets.wheel]
+packages = ["broadcastx"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

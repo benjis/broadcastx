@@ -37,15 +37,11 @@
 ## 安装
 
 ```bash
-# 创建并激活虚拟环境
-python3 -m venv .venv
-source .venv/bin/activate
-
 # 安装 BroadcastX 及其依赖
-pip install -e .
+uv sync
 
 # 安装 Playwright 的浏览器驱动
-playwright install chromium
+uv run playwright install chromium
 ```
 
 ## 快速开始
@@ -105,7 +101,11 @@ BroadcastX **自动修正手机旋转方向**：如果直播 HLS 流中包含方
 ### 监控直播
 
 ```bash
+# 监控单个用户
 broadcastx monitor @username
+
+# 同时监控多个用户（共享一个 Chromium 配置文件）
+broadcastx monitor @SpaceX @NASA @elonmusk
 
 # 单次检测（不循环）
 broadcastx monitor @username --once
@@ -122,10 +122,12 @@ broadcastx monitor @username --no-download
 
 监控器循环运行：
 
-1. **主页检查**（每隔 `check-interval` 秒，默认 30 分钟）—— 打开主页，查找直播卡片
+1. **主页检查**（每隔 `check-interval` 秒，默认 30 分钟）—— 打开每个用户的主页，查找直播卡片
 2. **直播检测** —— 找到候选后判断是否为当前直播
 3. **状态检查**（每隔 `live-interval` 秒，默认 5 分钟）—— 持续检查直到直播结束
 4. **自动下载** —— 直播结束后自动下载回放
+
+多个用户共享一个 Chromium 配置文件，只需登录一次。
 
 事件记录到 `output/monitor_events.json`。
 ### 抓取所有历史直播

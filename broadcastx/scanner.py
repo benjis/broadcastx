@@ -159,7 +159,7 @@ async def scan_user(
         from playwright.async_api import async_playwright
     except ImportError:
         console.print("[red]Playwright not installed.[/red]")
-        console.print("Run: [bold]pip install playwright && playwright install chromium[/bold]")
+        console.print("Run: [bold]uv sync && uv run playwright install chromium[/bold]")
         result.errors.append("Playwright not installed")
         return result
 

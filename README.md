@@ -37,15 +37,11 @@ Continuously monitors a user's profile. When a live broadcast is detected, perio
 ## Installation
 
 ```bash
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
 # Install BroadcastX and dependencies
-pip install -e .
+uv sync
 
 # Install Playwright's browser driver
-playwright install chromium
+uv run playwright install chromium
 ```
 
 ## Quick Start
@@ -102,10 +98,14 @@ broadcastx download --from output/broadcasts.json -v
 
 BroadcastX **automatically corrects phone rotation**: if the broadcast carries phone-orientation metadata in the HLS stream, the video is re-encoded so it displays upright in any player.
 
-### Monitor a profile for live broadcasts
+### Monitor profiles for live broadcasts
 
 ```bash
+# Monitor a single user
 broadcastx monitor @username
+
+# Monitor multiple users simultaneously (shares one Chromium profile)
+broadcastx monitor @SpaceX @NASA @elonmusk
 
 # One-shot test cycle (no loop)
 broadcastx monitor @username --once
@@ -122,10 +122,12 @@ broadcastx monitor @username --no-download
 
 The monitor runs in a loop:
 
-1. **Profile check** (every `check-interval`, default 30 min) — Opens the profile and looks for broadcast cards.
+1. **Profile check** (every `check-interval`, default 30 min) — Opens each profile and looks for broadcast cards.
 2. **Live detection** — When a candidate is found, checks whether it is currently live.
 3. **Live check** (every `live-interval`, default 5 min) — Re-checks status until the broadcast ends.
 4. **Download** — Downloads the replay automatically.
+
+Multiple users share a single Chromium profile, so you only need to log in once.
 
 Events are logged to `output/monitor_events.json`.
 ### Scrape all past broadcasts
