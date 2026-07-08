@@ -1,6 +1,6 @@
 [project]
 name = "broadcastx"
-version = "0.1.0"
+version = "0.1.1"
 description = "Discover and download X/Twitter broadcast videos from user timelines"
 requires-python = ">=3.11"
 dependencies = [
