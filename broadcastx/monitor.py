@@ -240,6 +240,18 @@ def _append_event(path: Path, event: dict) -> None:
                 events = loaded
         except json.JSONDecodeError:
             events = []
+
+    events.append(event)
+
+    path.write_text(json.dumps(events, indent=2, ensure_ascii=False))
+
+def _log_background_download_error(username: str, task):
+    """Log any unhandled exception from a background download task."""
+    try:
+        task.result()
+    except Exception:
+        console.print("[red]Background download for @" + username + " failed with unhandled error:[/red]")
+        console.print_exception()
 async def _background_download(
     url: str,
     output_dir: Path,
@@ -274,8 +286,7 @@ async def _background_download(
         })
 
 
-    events.append(event)
-    path.write_text(json.dumps(events, indent=2, ensure_ascii=False))
+
 
 
 async def _ensure_logged_in(context, page, headless: bool) -> bool:
@@ -435,7 +446,7 @@ async def monitor_users(
                             "ended_at": _now_iso(),
                         })
                         if download:
-                            asyncio.create_task(
+                            task = asyncio.create_task(
                                 _background_download(
                                     candidate.url,
                                     video_dir,
@@ -445,6 +456,7 @@ async def monitor_users(
                                     candidate.broadcast_id,
                                 )
                             )
+                            task.add_done_callback(lambda t, u=username: _log_background_download_error(u, t))
                         seen_completed.add(candidate.broadcast_id)
                         del live_candidates[username]
 

@@ -21,6 +21,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 
+from .models import BroadcastInfo, extract_broadcasts_from_response
 from .config import (
     BROADCAST_PATTERNS,
     normalize_broadcast_url,
@@ -29,27 +30,6 @@ from .config import (
 console = Console()
 
 
-@dataclass
-class BroadcastInfo:
-    """Information about a discovered broadcast."""
-    broadcast_id: str
-    url: str
-    tweet_text: str | None = None
-    tweet_url: str | None = None
-    tweet_id: str | None = None
-    created_at: str | None = None
-    user_name: str | None = None
-
-    def to_dict(self) -> dict:
-        return {k: v for k, v in {
-            "broadcast_id": self.broadcast_id,
-            "url": self.url,
-            "tweet_text": self.tweet_text,
-            "tweet_url": self.tweet_url,
-            "tweet_id": self.tweet_id,
-            "created_at": self.created_at,
-            "user_name": self.user_name,
-        }.items() if v is not None}
 
 
 @dataclass
@@ -103,329 +83,24 @@ def _save_state(username: str, user_id: str, cursor: str | None, stats: dict):
     console.print(f"  [dim]State saved to {path}[/dim]")
 
 
-def _extract_broadcasts_from_response(data: dict, username: str) -> list[BroadcastInfo]:
-    """Recursively search a Twitter GraphQL JSON response for broadcast URLs."""
-    broadcasts = []
-    seen_ids: set[str] = set()
-
-    def _check_url(url_str: str, context: dict):
-        for pattern in BROADCAST_PATTERNS:
-            match = pattern.search(url_str)
-            if match:
-                bid = match.group(1)
-                if bid not in seen_ids:
-                    seen_ids.add(bid)
-                    tweet_url = None
-                    if context.get("tweet_id"):
-                        tweet_url = f"https://x.com/{username}/status/{context['tweet_id']}"
-                    broadcasts.append(BroadcastInfo(
-                        broadcast_id=bid,
-                        url=normalize_broadcast_url(url_str) or url_str,
-                        tweet_text=context.get("tweet_text"),
-                        tweet_url=tweet_url,
-                        tweet_id=context.get("tweet_id"),
-                        created_at=context.get("created_at"),
-                        user_name=username,
-                    ))
-
-    def _walk(obj, context=None):
-        if context is None:
-            context = {}
-        if isinstance(obj, dict):
-            legacy = obj.get("legacy", {})
-            if isinstance(legacy, dict) and legacy.get("full_text"):
-                context = {
-                    **context,
-                    "tweet_text": legacy["full_text"],
-                    "tweet_id": legacy.get("id_str") or obj.get("rest_id"),
-                    "created_at": legacy.get("created_at"),
-                }
-            entities = (legacy if isinstance(legacy, dict) else {}).get("entities", {})
-            for url_entity in (entities.get("urls", []) if isinstance(entities, dict) else []):
-                if isinstance(url_entity, dict):
-                    _check_url(url_entity.get("expanded_url", ""), context)
-            card = obj.get("card", {})
-            if isinstance(card, dict):
-                bvs = card.get("legacy", {}).get("binding_values", [])
-                for bv in (bvs if isinstance(bvs, list) else []):
-                    if isinstance(bv, dict):
-                        sval = bv.get("value", {}).get("string_value", "")
-                        if sval:
-                            _check_url(sval, context)
-            for v in obj.values():
-                _walk(v, context)
-        elif isinstance(obj, list):
-            for item in obj:
-                _walk(item, context)
-
-    _walk(data)
-    return broadcasts
 
 
 # JS: Make a paginated GraphQL UserTweets call from within the browser page
-FETCH_PAGE_JS = """
-async ({userId, cursor, hdrs}) => {
-    const variables = {
-        userId: userId,
-        count: 40,
-        includePromotedContent: false,
-        withQuickPromoteEligibilityTweetFields: true,
-        withVoice: true,
-        withV2Timeline: true,
-    };
-    if (cursor) variables.cursor = cursor;
-
-    const features = {
-        "rweb_video_screen_enabled": false, "rweb_cashtags_enabled": true,
-        "profile_label_improvements_pcf_label_in_post_enabled": true,
-        "responsive_web_profile_redirect_enabled": false,
-        "rweb_tipjar_consumption_enabled": false, "verified_phone_label_enabled": false,
-        "creator_subscriptions_tweet_preview_api_enabled": true,
-        "responsive_web_graphql_timeline_navigation_enabled": true,
-        "responsive_web_graphql_skip_user_profile_image_extensions_enabled": false,
-        "premium_content_api_read_enabled": false,
-        "communities_web_enable_tweet_community_results_fetch": true,
-        "c9s_tweet_anatomy_moderator_badge_enabled": true,
-        "responsive_web_grok_analyze_button_fetch_trends_enabled": false,
-        "responsive_web_grok_analyze_post_followups_enabled": true,
-        "rweb_cashtags_composer_attachment_enabled": true,
-        "responsive_web_jetfuel_frame": true,
-        "responsive_web_grok_share_attachment_enabled": true,
-        "responsive_web_grok_annotations_enabled": true,
-        "articles_preview_enabled": true, "responsive_web_edit_tweet_api_enabled": true,
-        "rweb_conversational_replies_downvote_enabled": false,
-        "graphql_is_translatable_rweb_tweet_is_translatable_enabled": true,
-        "view_counts_everywhere_api_enabled": true,
-        "longform_notetweets_consumption_enabled": true,
-        "responsive_web_twitter_article_tweet_consumption_enabled": true,
-        "content_disclosure_indicator_enabled": true,
-        "content_disclosure_ai_generated_indicator_enabled": true,
-        "responsive_web_grok_show_grok_translated_post": true,
-        "responsive_web_grok_analysis_button_from_backend": true,
-        "post_ctas_fetch_enabled": true,
-        "freedom_of_speech_not_reach_fetch_enabled": true,
-        "standardized_nudges_misinfo": true,
-        "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": true,
-        "longform_notetweets_rich_text_read_enabled": true,
-        "longform_notetweets_inline_media_enabled": false,
-        "responsive_web_grok_image_annotation_enabled": true,
-        "responsive_web_grok_imagine_annotation_enabled": true,
-        "responsive_web_grok_community_note_auto_translation_is_enabled": true,
-        "responsive_web_enhance_cards_enabled": false,
-    };
-
-    const params = new URLSearchParams();
-    params.set('variables', JSON.stringify(variables));
-    params.set('features', JSON.stringify(features));
-    params.set('fieldToggles', JSON.stringify({withArticlePlainText: false}));
-
-    const h = {
-        'x-twitter-active-user': 'yes',
-        'x-twitter-client-language': 'en',
-        'x-twitter-auth-type': 'OAuth2Session',
-    };
-    if (hdrs.authorization) h['authorization'] = hdrs.authorization;
-    if (hdrs['x-client-transaction-id']) h['x-client-transaction-id'] = hdrs['x-client-transaction-id'];
-    if (hdrs['x-csrf-token']) h['x-csrf-token'] = hdrs['x-csrf-token'];
-
-    try {
-        const resp = await fetch('/i/api/graphql/RyDU3I9VJtPF-Pnl6vrRlw/UserTweets?' + params.toString(), {
-            credentials: 'include', headers: h,
-        });
-        const retryAfter = resp.headers.get('x-rate-limit-reset');
-        if (!resp.ok) return {error: 'HTTP ' + resp.status, data: null, status: resp.status, retryAfter};
-        return {error: null, data: await resp.json(), status: 200, retryAfter: null};
-    } catch (e) {
-        return {error: e.toString(), data: null, status: 0, retryAfter: null};
-    }
-}
-"""
+_JS_DIR = Path(__file__).parent / "js"
+FETCH_PAGE_JS = (_JS_DIR / "fetch_page.js").read_text()
+# (loaded from js/fetch_page.js)
 
 # JS: Extract broadcasts and cursor from a response
-EXTRACT_JS = """
-(data) => {
-    const broadcasts = [];
-    const seen = new Set();
-    let cursor = null;
-    let tweetCount = 0;
-
-    function walk(obj, ctx) {
-        if (!obj || typeof obj !== 'object') return;
-        const legacy = obj.legacy || {};
-        if (legacy.full_text) {
-            ctx = {...ctx, tweet_text: legacy.full_text, tweet_id: legacy.id_str || obj.rest_id, created_at: legacy.created_at};
-        }
-        const urls = ((legacy.entities || {}).urls || []);
-        for (const u of urls) {
-            const url = u.expanded_url || '';
-            const m = url.match(/https?:\\/\\/(?:x|twitter)\\.com\\/i\\/broadcasts\\/([\\w]+)/);
-            if (m && !seen.has(m[1])) {
-                seen.add(m[1]);
-                broadcasts.push({broadcast_id: m[1], url: 'https://x.com/i/broadcasts/' + m[1], tweet_text: ctx.tweet_text || null, tweet_id: ctx.tweet_id || null, created_at: ctx.created_at || null});
-            }
-        }
-        const bvs = ((obj.card || {}).legacy || {}).binding_values || [];
-        for (const bv of bvs) {
-            const sv = (bv.value || {}).string_value || '';
-            const m = sv.match(/https?:\\/\\/(?:x|twitter)\\.com\\/i\\/broadcasts\\/([\\w]+)/);
-            if (m && !seen.has(m[1])) {
-                seen.add(m[1]);
-                broadcasts.push({broadcast_id: m[1], url: 'https://x.com/i/broadcasts/' + m[1], tweet_text: ctx.tweet_text || null, tweet_id: ctx.tweet_id || null, created_at: ctx.created_at || null});
-            }
-        }
-        for (const v of Object.values(obj)) walk(v, ctx);
-    }
-
-    try {
-        const userResult = (((data || {}).data || {}).user || {}).result || {};
-        const tl = userResult.timeline_v2 || userResult.timeline || {};
-        const instrs = (tl.timeline || {}).instructions || [];
-        for (const inst of instrs) {
-            for (const entry of (inst.entries || [])) {
-                if ((entry.entryId || '').startsWith('tweet-')) tweetCount++;
-                if ((entry.entryId || '').startsWith('cursor-bottom')) {
-                    cursor = (entry.content || {}).value || null;
-                }
-                walk(entry, {});
-            }
-        }
-    } catch(e) {}
-
-    return {broadcasts, cursor, tweetCount};
-}
-"""
+EXTRACT_JS = (_JS_DIR / "search_extract.js").read_text()
+# (loaded from js/extract.js)
 
 # JS: Make a paginated GraphQL SearchTimeline call
-SEARCH_PAGE_JS = """
-async ({query, cursor, hdrs}) => {
-    const variables = {
-        rawQuery: query,
-        count: 20,
-        product: "Latest",
-        querySource: "typed_query",
-    };
-    if (cursor) variables.cursor = cursor;
-
-    const features = {
-        "rweb_video_screen_enabled": false, "rweb_cashtags_enabled": true,
-        "profile_label_improvements_pcf_label_in_post_enabled": true,
-        "responsive_web_profile_redirect_enabled": false,
-        "rweb_tipjar_consumption_enabled": false, "verified_phone_label_enabled": false,
-        "creator_subscriptions_tweet_preview_api_enabled": true,
-        "responsive_web_graphql_timeline_navigation_enabled": true,
-        "responsive_web_graphql_skip_user_profile_image_extensions_enabled": false,
-        "premium_content_api_read_enabled": false,
-        "communities_web_enable_tweet_community_results_fetch": true,
-        "c9s_tweet_anatomy_moderator_badge_enabled": true,
-        "responsive_web_grok_analyze_button_fetch_trends_enabled": false,
-        "responsive_web_grok_analyze_post_followups_enabled": true,
-        "rweb_cashtags_composer_attachment_enabled": true,
-        "responsive_web_jetfuel_frame": true,
-        "responsive_web_grok_share_attachment_enabled": true,
-        "responsive_web_grok_annotations_enabled": true,
-        "articles_preview_enabled": true, "responsive_web_edit_tweet_api_enabled": true,
-        "rweb_conversational_replies_downvote_enabled": false,
-        "graphql_is_translatable_rweb_tweet_is_translatable_enabled": true,
-        "view_counts_everywhere_api_enabled": true,
-        "longform_notetweets_consumption_enabled": true,
-        "responsive_web_twitter_article_tweet_consumption_enabled": true,
-        "content_disclosure_indicator_enabled": true,
-        "content_disclosure_ai_generated_indicator_enabled": true,
-        "responsive_web_grok_show_grok_translated_post": true,
-        "responsive_web_grok_analysis_button_from_backend": true,
-        "post_ctas_fetch_enabled": true,
-        "freedom_of_speech_not_reach_fetch_enabled": true,
-        "standardized_nudges_misinfo": true,
-        "tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled": true,
-        "longform_notetweets_rich_text_read_enabled": true,
-        "longform_notetweets_inline_media_enabled": false,
-        "responsive_web_grok_image_annotation_enabled": true,
-        "responsive_web_grok_imagine_annotation_enabled": true,
-        "responsive_web_grok_community_note_auto_translation_is_enabled": true,
-        "responsive_web_enhance_cards_enabled": false,
-    };
-
-    const params = new URLSearchParams();
-    params.set('variables', JSON.stringify(variables));
-    params.set('features', JSON.stringify(features));
-    params.set('fieldToggles', JSON.stringify({withArticleRichContentState: false}));
-
-    const h = {
-        'x-twitter-active-user': 'yes',
-        'x-twitter-client-language': 'en',
-        'x-twitter-auth-type': 'OAuth2Session',
-    };
-    if (hdrs.authorization) h['authorization'] = hdrs.authorization;
-    if (hdrs['x-client-transaction-id']) h['x-client-transaction-id'] = hdrs['x-client-transaction-id'];
-    if (hdrs['x-csrf-token']) h['x-csrf-token'] = hdrs['x-csrf-token'];
-
-    try {
-        const resp = await fetch('/i/api/graphql/dsWn-Op2S0SmJjgY6Yvckg/SearchTimeline?' + params.toString(), {
-            credentials: 'include', headers: h,
-        });
-        const retryAfter = resp.headers.get('x-rate-limit-reset');
-        if (!resp.ok) return {error: 'HTTP ' + resp.status, data: null, status: resp.status, retryAfter};
-        return {error: null, data: await resp.json(), status: 200, retryAfter: null};
-    } catch (e) {
-        return {error: e.toString(), data: null, status: 0, retryAfter: null};
-    }
-}
-"""
+SEARCH_PAGE_JS = (_JS_DIR / "search_page.js").read_text()
+# (loaded from js/search_page.js)
 
 # JS: Extract broadcasts and cursor from SearchTimeline response
-SEARCH_EXTRACT_JS = """
-(data) => {
-    const broadcasts = [];
-    const seen = new Set();
-    let cursor = null;
-    let tweetCount = 0;
-
-    function walk(obj, ctx) {
-        if (!obj || typeof obj !== 'object') return;
-        const legacy = obj.legacy || {};
-        if (legacy.full_text) {
-            ctx = {...ctx, tweet_text: legacy.full_text, tweet_id: legacy.id_str || obj.rest_id, created_at: legacy.created_at};
-        }
-        const urls = ((legacy.entities || {}).urls || []);
-        for (const u of urls) {
-            const url = u.expanded_url || '';
-            const m = url.match(/https?:\\/\\/(?:x|twitter)\\.com\\/i\\/broadcasts\\/([\\w]+)/);
-            if (m && !seen.has(m[1])) {
-                seen.add(m[1]);
-                broadcasts.push({broadcast_id: m[1], url: 'https://x.com/i/broadcasts/' + m[1], tweet_text: ctx.tweet_text || null, tweet_id: ctx.tweet_id || null, created_at: ctx.created_at || null});
-            }
-        }
-        const bvs = ((obj.card || {}).legacy || {}).binding_values || [];
-        for (const bv of bvs) {
-            const sv = (bv.value || {}).string_value || '';
-            const m = sv.match(/https?:\\/\\/(?:x|twitter)\\.com\\/i\\/broadcasts\\/([\\w]+)/);
-            if (m && !seen.has(m[1])) {
-                seen.add(m[1]);
-                broadcasts.push({broadcast_id: m[1], url: 'https://x.com/i/broadcasts/' + m[1], tweet_text: ctx.tweet_text || null, tweet_id: ctx.tweet_id || null, created_at: ctx.created_at || null});
-            }
-        }
-        for (const v of Object.values(obj)) walk(v, ctx);
-    }
-
-    try {
-        // SearchTimeline response structure: data.search_by_raw_query.search_timeline.timeline.timeline.instructions
-        const searchTimeline = (((data || {}).data || {}).search_by_raw_query || {}).search_timeline || {};
-        const tl = searchTimeline.timeline || {};
-        const instrs = tl.instructions || [];
-        for (const inst of instrs) {
-            for (const entry of (inst.entries || [])) {
-                if ((entry.entryId || '').startsWith('tweet-')) tweetCount++;
-                if ((entry.entryId || '').startsWith('cursor-bottom')) {
-                    cursor = (entry.content || {}).value || null;
-                }
-                walk(entry, {});
-            }
-        }
-    } catch(e) {}
-
-    return {broadcasts, cursor, tweetCount};
-}
-"""
+SEARCH_EXTRACT_JS = (_JS_DIR / "search_extract.js").read_text()
+# (loaded from js/search_extract.js)
 
 
 def _generate_date_windows(start_date: str, end_date: str, step_days: int = 30) -> list[tuple[str, str]]:

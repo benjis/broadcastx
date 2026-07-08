@@ -65,8 +65,8 @@ class DownloaderRotationTests(unittest.TestCase):
         self.assertFalse(result.rotation_applied)
         self.assertIn("metadata unavailable", result.warning)
 
-    @patch("broadcastx.rotation._probe_video", return_value=(720, 1280, 30.0))
-    @patch("broadcastx.rotation.subprocess.run")
+    @patch("broadcastx.video_rotation._probe_video", return_value=(720, 1280, 30.0))
+    @patch("broadcastx.video_rotation.subprocess.run")
     def test_rotate_video_all_zero_copies_inplace(self, mock_run, mock_probe):
         """All rotations = 0 → copy, not ffmpeg."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -85,8 +85,8 @@ class DownloaderRotationTests(unittest.TestCase):
             self.assertEqual(output.read_text(), "fake mp4")
         mock_run.assert_not_called()
 
-    @patch("broadcastx.rotation._probe_video", return_value=(720, 1280, 30.0))
-    @patch("broadcastx.rotation.subprocess.run")
+    @patch("broadcastx.video_rotation._probe_video", return_value=(720, 1280, 30.0))
+    @patch("broadcastx.video_rotation.subprocess.run")
     def test_rotate_video_uniform_90_calls_ffmpeg(self, mock_run, mock_probe):
         """Uniform 90° rotation → one ffmpeg call with rotate filter."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,7 +108,7 @@ class DownloaderRotationTests(unittest.TestCase):
         filter_str = cmd[vf_idx]
         self.assertIn("rotate=90*PI/180", filter_str)
 
-    @patch("broadcastx.rotation._probe_video", return_value=(720, 1280, 30.0))
+    @patch("broadcastx.video_rotation._probe_video", return_value=(720, 1280, 30.0))
     def test_rotate_video_dry_run_no_execution(self, mock_probe):
         """dry_run=True should not execute any ffmpeg calls."""
         with tempfile.TemporaryDirectory() as tmp:

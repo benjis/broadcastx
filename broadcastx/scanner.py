@@ -29,105 +29,7 @@ from .config import (
 console = Console()
 
 
-@dataclass
-class BroadcastInfo:
-    """Information about a discovered broadcast."""
-    broadcast_id: str
-    url: str
-    tweet_text: str | None = None
-    tweet_url: str | None = None
-    created_at: str | None = None
-    user_name: str | None = None
-
-    def to_dict(self) -> dict:
-        return {k: v for k, v in {
-            "broadcast_id": self.broadcast_id,
-            "url": self.url,
-            "tweet_text": self.tweet_text,
-            "tweet_url": self.tweet_url,
-            "created_at": self.created_at,
-            "user_name": self.user_name,
-        }.items() if v is not None}
-
-
-@dataclass
-class ScanResult:
-    """Result of scanning a user's timeline."""
-    username: str
-    broadcasts: list[BroadcastInfo] = field(default_factory=list)
-    tweets_scanned: int = 0
-    scrolls_performed: int = 0
-    errors: list[str] = field(default_factory=list)
-
-    def to_dict(self) -> dict:
-        return {
-            "username": self.username,
-            "total_broadcasts": len(self.broadcasts),
-            "tweets_scanned": self.tweets_scanned,
-            "broadcasts": [b.to_dict() for b in self.broadcasts],
-        }
-
-
-def _extract_broadcasts_from_response(data: dict, username: str) -> list[BroadcastInfo]:
-    """Recursively search a Twitter GraphQL JSON response for broadcast URLs."""
-    broadcasts = []
-    seen_ids: set[str] = set()
-
-    def _check_url(url_str: str, context: dict):
-        for pattern in BROADCAST_PATTERNS:
-            match = pattern.search(url_str)
-            if match:
-                bid = match.group(1)
-                if bid not in seen_ids:
-                    seen_ids.add(bid)
-                    tweet_url = None
-                    if context.get("tweet_id"):
-                        tweet_url = f"https://x.com/{username}/status/{context['tweet_id']}"
-                    broadcasts.append(BroadcastInfo(
-                        broadcast_id=bid,
-                        url=normalize_broadcast_url(url_str) or url_str,
-                        tweet_text=context.get("tweet_text"),
-                        tweet_url=tweet_url,
-                        created_at=context.get("created_at"),
-                        user_name=username,
-                    ))
-
-    def _walk(obj, context=None):
-        if context is None:
-            context = {}
-        if isinstance(obj, dict):
-            legacy = obj.get("legacy", {})
-            if isinstance(legacy, dict) and legacy.get("full_text"):
-                context = {
-                    **context,
-                    "tweet_text": legacy["full_text"],
-                    "tweet_id": legacy.get("id_str") or obj.get("rest_id"),
-                    "created_at": legacy.get("created_at"),
-                }
-            # Check URL entities
-            entities = (legacy if isinstance(legacy, dict) else {}).get("entities", {})
-            for url_entity in (entities.get("urls", []) if isinstance(entities, dict) else []):
-                if isinstance(url_entity, dict):
-                    _check_url(url_entity.get("expanded_url", ""), context)
-            # Check card binding values
-            card = obj.get("card", {})
-            if isinstance(card, dict):
-                bvs = card.get("legacy", {}).get("binding_values", [])
-                for bv in (bvs if isinstance(bvs, list) else []):
-                    if isinstance(bv, dict):
-                        sval = bv.get("value", {}).get("string_value", "")
-                        if sval:
-                            _check_url(sval, context)
-            for v in obj.values():
-                _walk(v, context)
-        elif isinstance(obj, list):
-            for item in obj:
-                _walk(item, context)
-
-    _walk(data)
-    return broadcasts
-
-
+from .models import BroadcastInfo, extract_broadcasts_from_response
 async def scan_user(
     username: str,
     max_scrolls: int = DEFAULT_MAX_SCROLLS,
@@ -194,7 +96,7 @@ async def scan_user(
             try:
                 body = await response.json()
                 response_count += 1
-                new = _extract_broadcasts_from_response(body, username)
+                new = extract_broadcasts_from_response(body, username)
                 for b in new:
                     if b.broadcast_id not in all_broadcasts:
                         all_broadcasts[b.broadcast_id] = b

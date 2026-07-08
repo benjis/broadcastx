@@ -33,6 +33,19 @@ def main():
     pass
 
 
+def _require_dependencies(*tools: str) -> None:
+    """Check required tools are installed, exit with message if not.
+
+    Accepts any combination of "yt-dlp" and "ffmpeg".
+    """
+    checks = {"yt-dlp": (check_yt_dlp, "yt-dlp"), "ffmpeg": (check_ffmpeg, "ffmpeg")}
+    for tool in tools:
+        check_fn, name = checks[tool]
+        if not check_fn():
+            console.print(f"[red]✗ {name} not found. Install with: brew install {name}[/red]")
+            raise SystemExit(1)
+
+
 @main.command()
 @click.argument("username")
 @click.option("--max-scrolls", "-n", default=100, help="Maximum scroll actions (default: 100)")
@@ -116,15 +129,9 @@ def monitor(usernames, check_interval, live_interval, output, output_dir, browse
     USERNAMES can be with or without @ (e.g., @SpaceX @NASA or SpaceX NASA).
     Multiple usernames share a single Chromium profile.
     """
-    if download and not check_yt_dlp():
-        console.print("[red]✗ yt-dlp not found.[/red]")
-        console.print("  Install with: [bold]brew install yt-dlp[/bold]")
-        raise SystemExit(1)
+    if download:
+        _require_dependencies("yt-dlp", "ffmpeg")
 
-    if download and not check_ffmpeg():
-        console.print("[red]✗ ffmpeg not found.[/red]")
-        console.print("  Install with: [bold]brew install ffmpeg[/bold]")
-        raise SystemExit(1)
 
     asyncio.run(monitor_users(
         usernames=list(usernames),
@@ -164,16 +171,9 @@ def download(urls, from_file, output_dir, browser, verbose, parallel):
     displays upright. A `.rotation.jsonl` sidecar is also written alongside
     the video for inspection.
     """
+    _require_dependencies("yt-dlp", "ffmpeg")
     # Pre-flight checks
-    if not check_yt_dlp():
-        console.print("[red]✗ yt-dlp not found.[/red]")
-        console.print("  Install with: [bold]brew install yt-dlp[/bold]")
-        raise SystemExit(1)
 
-    if not check_ffmpeg():
-        console.print("[red]✗ ffmpeg not found.[/red]")
-        console.print("  Install with: [bold]brew install ffmpeg[/bold]")
-        raise SystemExit(1)
 
     if not urls and not from_file:
         console.print("[yellow]Provide URLs or use --from <file>.[/yellow]")
@@ -195,8 +195,6 @@ def download(urls, from_file, output_dir, browser, verbose, parallel):
         raise SystemExit(1)
 
 
-if __name__ == "__main__":
-    main()
 @main.command()
 @click.argument("broadcast_url")
 @click.option("--browser", "-b", default=DEFAULT_BROWSER, help=f"Browser for cookies (default: {DEFAULT_BROWSER})")
@@ -212,10 +210,9 @@ def trim_pauses(broadcast_url, browser, trim, output, size_ratio, gap_density, m
     playlist PDT timestamps to find sections where the video was paused
     while audio continued.  Default: detect-only.  Pass --trim to cut.
     """
-    if trim and not check_ffmpeg():
-        console.print("[red]ffmpeg not found - install with: brew install ffmpeg[/red]")
-        raise SystemExit(1)
 
+    if trim:
+        _require_dependencies("ffmpeg")
     console.print("[bold]Analysing HLS segments for pauses...[/bold]")
 
     pauses = detect_pauses(
@@ -266,10 +263,8 @@ def watermark(video_path, text, font, font_size, opacity, color, position, outpu
     the video.  Requires ffmpeg compiled with --enable-libfreetype (stock
     ffmpeg includes this).
     """
-    if not check_ffmpeg():
-        console.print("[red]ffmpeg not found - install with: brew install ffmpeg[/red]")
-        raise SystemExit(1)
 
+    _require_dependencies("ffmpeg")
     vid = Path(video_path)
 
     opts = WatermarkOptions(
@@ -306,3 +301,6 @@ def watermark(video_path, text, font, font_size, opacity, color, position, outpu
     except Exception as e:
         console.print(f"[red]Failed: {e}[/red]")
         raise SystemExit(1)
+
+if __name__ == "__main__":
+    main()
