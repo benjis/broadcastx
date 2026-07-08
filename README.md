@@ -10,6 +10,7 @@ Discover, monitor, and download X/Twitter broadcast videos from user timelines.
 
 - **Scan** — Find broadcast links in a user's timeline
 - **Download** — Download broadcast videos with automatic phone-rotation correction
+- **Watermark** — Add customizable text watermarks to videos via ffmpeg
 - **Monitor** — Watch a profile for live broadcasts and auto-download replays
 
 ## Features
@@ -25,6 +26,10 @@ Downloads broadcast videos via `yt-dlp` and post-processes the video to correct 
 ### Monitor
 
 Continuously monitors a user's profile. When a live broadcast is detected, periodically checks its status. When the broadcast ends, automatically downloads the replay.
+
+### Watermark
+
+Adds customizable text watermarks to downloaded videos using ffmpeg's `drawtext` filter. The watermark text is rendered in the bottom-right corner by default, with options for font, size, opacity, color, and position (bottom-right, bottom-left, top-right, top-left).
 
 
 ## Prerequisites
@@ -130,6 +135,39 @@ The monitor runs in a loop:
 Multiple users share a single Chromium profile, so you only need to log in once.
 
 Events are logged to `output/monitor_events.json`.
+
+### Add watermarks to videos
+
+```bash
+# Add a default "broadcastx" watermark to the bottom-right of a video
+broadcastx watermark video.mp4
+
+# Custom text, font, and size
+broadcastx watermark video.mp4 --text "My Channel" --font Arial --font-size 36
+
+# Custom opacity, color, and position
+broadcastx watermark video.mp4 --opacity 0.5 --color "#FF5733" --position top-left
+
+# Write to a new file instead of overwriting
+broadcastx watermark video.mp4 --output watermarked.mp4
+
+# Dry-run to preview settings without running ffmpeg
+broadcastx watermark video.mp4 --dry-run
+```
+
+The watermark command uses ffmpeg's `drawtext` filter. Stock ffmpeg builds include `libfreetype` and support this filter out of the box.
+
+Options:
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--text` | `-t` | `broadcastx` | Watermark text |
+| `--font` | `-f` | `sans-serif` | Font family or path |
+| `--font-size` | `-s` | `24` | Font size in points |
+| `--opacity` | `-o` | `0.7` | Text opacity (0.0–1.0) |
+| `--color` | `-c` | `white` | Font color name or hex |
+| `--position` | `-p` | `bottom-right` | One of: `bottom-right`, `bottom-left`, `top-right`, `top-left` |
+| `--output` | `-O` | *(in-place)* | Output video path |
+| `--dry-run` | | *(off)* | Preview without executing |
 ### Scrape all past broadcasts
 
 ```bash
@@ -159,6 +197,7 @@ output/
 └── videos/
     ├── [title] [id].mp4     # Downloaded broadcast
     ├── [id].rotation.jsonl  # Rotation timeline sidecar
+    ├── [id].watermarked.mp4 # Watermarked output (optional)
     └── ...
 ```
 
@@ -175,6 +214,9 @@ broadcastx monitor @username -o ./videos
 # Bulk scrape + download
 broadcastx scrape @username
 broadcastx download --from output/username_broadcasts.json
+
+# Watermark a downloaded video
+broadcastx watermark ./videos/*.mp4 --text "broadcastx" --output ./videos/watermarked/
 ```
 
 ## How It Works

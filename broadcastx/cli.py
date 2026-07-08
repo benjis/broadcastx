@@ -8,6 +8,7 @@ Usage:
 """
 
 import asyncio
+import subprocess
 from pathlib import Path
 
 import click
@@ -20,6 +21,7 @@ from .monitor import monitor_user, monitor_users
 from .pause_detector import detect_pauses, pause_report, trim_intervals
 from .scanner import scan_user
 from .scrape_broadcasts import scrape_broadcasts
+from .watermark import WatermarkOptions, add_watermark
 
 console = Console()
 
@@ -243,3 +245,64 @@ def trim_pauses(broadcast_url, browser, trim, output, size_ratio, gap_density, m
             raise SystemExit(1)
     elif trim and not pauses:
         console.print("[green]Nothing to trim.")
+
+
+@main.command()
+@click.argument("video_path", type=click.Path(exists=True))
+@click.option("--text", "-t", default=None, help="Watermark text (default: broadcastx)")
+@click.option("--font", "-f", default="sans-serif", help="Font family or path (default: sans-serif)")
+@click.option("--font-size", "-s", default=24, type=int, help="Font size in points (default: 24)")
+@click.option("--opacity", "-o", default=0.7, type=float, help="Text opacity 0.0-1.0 (default: 0.7)")
+@click.option("--color", "-c", default="white", help="Font color name or hex (default: white)")
+@click.option("--position", "-p", default="bottom-right",
+              type=click.Choice(["bottom-right", "bottom-left", "top-right", "top-left"]),
+              help="Watermark position on screen (default: bottom-right)")
+@click.option("--output", "-O", default=None, type=click.Path(), help="Output video path (default: overwrite input)")
+@click.option("--dry-run", is_flag=True, help="Show what would be done without running ffmpeg")
+def watermark(video_path, text, font, font_size, opacity, color, position, output, dry_run):
+    """Add a text watermark to a video using ffmpeg.
+
+    Draws customizable text (font, size, opacity, color) in a corner of
+    the video.  Requires ffmpeg compiled with --enable-libfreetype (stock
+    ffmpeg includes this).
+    """
+    if not check_ffmpeg():
+        console.print("[red]ffmpeg not found - install with: brew install ffmpeg[/red]")
+        raise SystemExit(1)
+
+    vid = Path(video_path)
+
+    opts = WatermarkOptions(
+        text=text or "broadcastx",
+        font=font,
+        font_size=font_size,
+        opacity=opacity,
+        color=color,
+        position=position,
+    )
+
+    out = Path(output) if output else None
+
+    console.print(f"[bold]Adding watermark...[/bold]")
+    console.print(f"  Video:  {vid}")
+    console.print(f"  Text:   \"{opts.text}\"")
+    console.print(f"  Font:   {opts.font} {opts.font_size}pt")
+    console.print(f"  Color:  {opts.color} @ {opts.opacity:.0%}")
+    console.print(f"  Pos:    {opts.position}")
+    console.print(f"  Output: {out or vid}")
+
+    if dry_run:
+        console.print("[yellow]Dry-run — nothing executed.[/yellow]")
+        return
+
+    try:
+        result = add_watermark(vid, output_path=out, options=opts)
+        console.print(f"  [green]Done → {result}[/green]")
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
+        console.print(f"[red]ffmpeg failed (exit {e.returncode}):[/red]")
+        console.print(stderr[:600])
+        raise SystemExit(1)
+    except Exception as e:
+        console.print(f"[red]Failed: {e}[/red]")
+        raise SystemExit(1)
