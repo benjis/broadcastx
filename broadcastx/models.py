@@ -12,6 +12,16 @@ from .config import BROADCAST_PATTERNS, normalize_broadcast_url
 
 
 @dataclass
+class ScanResult:
+    """Result from scanning a user's timeline for broadcasts."""
+
+    username: str
+    broadcasts: list[BroadcastInfo] = field(default_factory=list)
+    scrolls_performed: int = 0
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass
 class BroadcastInfo:
     """Information about a discovered broadcast."""
 

@@ -29,7 +29,7 @@ from .config import (
 console = Console()
 
 
-from .models import BroadcastInfo, extract_broadcasts_from_response
+from .models import BroadcastInfo, ScanResult, extract_broadcasts_from_response
 async def scan_user(
     username: str,
     max_scrolls: int = DEFAULT_MAX_SCROLLS,

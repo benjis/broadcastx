@@ -20,6 +20,7 @@ from .hls import (
 )
 from .id3 import (
     ID3RotationSample,
+    _angle_distance,
     _extract_id3_from_ts,
     parse_id3_rotation_sample,
     quantize_rotation,
