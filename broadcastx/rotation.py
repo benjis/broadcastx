@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from .config import DEFAULT_BROWSER, extract_broadcast_id, normalize_broadcast_url
 from .hls import (
@@ -20,6 +20,7 @@ from .hls import (
 )
 from .id3 import (
     ID3RotationSample,
+    _angle_distance,
     _extract_id3_from_ts,
     parse_id3_rotation_sample,
     quantize_rotation,
@@ -75,8 +76,13 @@ def extract_rotation_sidecar(
     output_dir: Path,
     browser: str = DEFAULT_BROWSER,
     hysteresis_degrees: float = DEFAULT_HYSTERESIS_DEGREES,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> Path:
-    """Resolve a broadcast HLS URL and write quantized rotation samples as JSONL."""
+    """Resolve a broadcast HLS URL and write quantized rotation samples as JSONL.
+
+    ``progress_callback`` receives the number of HLS segments processed and
+    the total segment count once the media playlist has been resolved.
+    """
     normalized = normalize_broadcast_url(url)
     if not normalized:
         raise ValueError(f"Not a valid broadcast URL: {url}")
@@ -89,8 +95,10 @@ def extract_rotation_sidecar(
     playlist_text = _http_text(playlist_url)
     playlist_text, playlist_url = _ensure_media_playlist(playlist_text, playlist_url)
     playlist = _parse_media_playlist(playlist_text, playlist_url)
+    if progress_callback:
+        progress_callback(0, len(playlist))
     samples = []
-    for segment in playlist:
+    for completed, segment in enumerate(playlist, start=1):
         data = _http_bytes(segment["url"], byte_range=SEGMENT_RANGE_BYTES)
         tag = _extract_id3_from_ts(data) or data
         sample = parse_id3_rotation_sample(
@@ -101,6 +109,8 @@ def extract_rotation_sidecar(
         )
         if sample:
             samples.append(sample)
+        if progress_callback:
+            progress_callback(completed, len(playlist))
 
     quantized = quantize_rotation_series(samples, hysteresis_degrees=hysteresis_degrees)
     output_dir = Path(output_dir)
@@ -117,7 +127,13 @@ def rotate_video(
     output_path: str | Path | None = None,
     *,
     dry_run: bool = False,
+    progress_callback: Callable[[float, float, int | None, str | None, str], None] | None = None,
 ) -> Path:
     """Apply rotation correction to a video. Delegates to video_rotation module."""
-    return _rotate_video(video_path, sidecar_path, output_path, dry_run=dry_run)
-
+    return _rotate_video(
+        video_path,
+        sidecar_path,
+        output_path,
+        dry_run=dry_run,
+        progress_callback=progress_callback,
+    )

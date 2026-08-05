@@ -12,10 +12,13 @@ Usage:
 """
 
 import json
+import re
 import shutil
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,6 +50,110 @@ class DownloadResult:
     warning: str | None = None
 
 
+# In-place progress display. The pipeline (video download, metadata
+# download, ffmpeg rotation) can run for tens of minutes, so every stage
+# renders as a single status line overwritten in place (carriage-return
+# based) instead of scrolling.
+_PROGRESS_COLS = 76
+
+# Matches yt-dlp progress lines, including streams where no total size is
+# available. The display format has changed across yt-dlp releases, so only
+# the percentage is required.
+_DOWNLOAD_PROGRESS_RE = re.compile(r"\[download\]\s+([\d.]+)%")
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+_progress_active = False
+_progress_lock = threading.Lock()
+
+
+def _write_progress(text: str) -> None:
+    """Overwrite the current in-place status line."""
+    global _progress_active
+    # Rich treats carriage returns as layout input instead of forwarding them
+    # to the terminal, which turns every refresh into another printed line.
+    # Progress controls must therefore bypass Rich's renderer.
+    with _progress_lock:
+        console.file.write(f"\r{text.ljust(_PROGRESS_COLS)}")
+        console.file.flush()
+        _progress_active = True
+
+
+def _clear_progress() -> None:
+    """Erase the in-place status line, leaving the cursor at line start."""
+    global _progress_active
+    with _progress_lock:
+        if not _progress_active:
+            return
+        console.file.write("\r" + " " * _PROGRESS_COLS + "\r")
+        console.file.flush()
+        _progress_active = False
+
+
+def _download_progress_text(line: str) -> str | None:
+    """Return a compact summary of a yt-dlp `[download]` progress line.
+
+    Returns None for lines that are not progress updates (e.g.
+    `[download] Destination: ...` or `[download] has already been
+    downloaded`), so they can be printed normally instead.
+    """
+    # yt-dlp can prefix progress lines with terminal-color or cursor-control
+    # sequences. Remove those before recognizing the stable `[download]` part.
+    s = _ANSI_ESCAPE_RE.sub("", line).lstrip()
+    if not s.startswith("[download]"):
+        return None
+    rest = s.split("]", 1)[1].lstrip()
+    if not rest or not rest[0].isdigit():
+        return None
+    match = _DOWNLOAD_PROGRESS_RE.search(s)
+    if match:
+        parts = [f"{match.group(1)}%"]
+        speed = re.search(r"\bat\s+(\S+)", s)
+        eta = re.search(r"\bETA\s+([\d:]+)", s)
+        if speed:
+            parts.append(f"at {speed.group(1)}")
+        if eta:
+            parts.append(f"ETA {eta.group(1)}")
+        return " ".join(parts)
+    return rest
+
+
+def _fmt_elapsed(seconds: float) -> str:
+    seconds = int(seconds)
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _metadata_progress_text(completed: int, total: int) -> str:
+    """Format sidecar progress from its known HLS segment count."""
+    if total <= 0:
+        return "complete"
+    return f"{completed / total * 100:.1f}% ({completed}/{total})"
+
+
+@contextmanager
+def _stage_indicator(label: str, interval: float = 0.5):
+    """Show an in-place `{label} \u2026 mm:ss` ticker while the block runs.
+
+    Used for stages with no intrinsic progress output (metadata download,
+    ffmpeg rotation) so the user always knows what the pipeline is doing.
+    """
+    done = threading.Event()
+    started = time.monotonic()
+
+    def _tick() -> None:
+        while not done.is_set():
+            _write_progress(f"{label} \u2026 {_fmt_elapsed(time.monotonic() - started)}")
+            done.wait(interval)
+
+    ticker = threading.Thread(target=_tick, daemon=True)
+    ticker.start()
+    try:
+        yield
+    finally:
+        done.set()
+        ticker.join()
+        _clear_progress()
+
+
 def check_yt_dlp() -> bool:
     """Check if yt-dlp is installed and accessible."""
     return shutil.which("yt-dlp") is not None
@@ -62,12 +169,24 @@ def download_broadcast(
     output_dir: Path = DEFAULT_VIDEOS_DIR,
     browser: str = DEFAULT_BROWSER,
     verbose: bool = False,
+    progress: str = "inplace",
 ) -> DownloadResult:
     """
     Download a single broadcast video using yt-dlp.
 
-    No timeout — broadcasts can be hours long. yt-dlp runs until completion
-    with live output streamed to the terminal.
+    No timeout — broadcasts can be hours long. The video download and the
+    rotation-metadata (sidecar) download run in parallel.
+
+    `progress` selects the output shape; download, parallel metadata,
+    rotation, and failure semantics are identical in both modes:
+      - "inplace" (default): each pipeline stage renders as a single
+        status line, overwritten in place via carriage returns (v1 UX).
+      - "stages": complete event lines only, never carriage returns —
+        safe while another loop prints to the same terminal (monitor
+        mode). The in-place stage ticker does not run; long stages are
+        reported as complete event lines instead.
+
+    Errors and warnings always print as complete lines in both modes.
 
     Args:
         url: Broadcast URL (x.com/i/broadcasts/... or pscp.tv/w/...)
@@ -75,9 +194,15 @@ def download_broadcast(
         browser: Browser to extract cookies from
         verbose: Show yt-dlp output
        
+        progress: Output mode, "inplace" (single line) or "stages" (event lines)
+
     Returns:
         DownloadResult with success status and output file path
     """
+    if progress not in ("inplace", "stages"):
+        raise ValueError(f"progress must be 'inplace' or 'stages', got {progress!r}")
+    stages = progress == "stages"
+
     normalized = normalize_broadcast_url(url)
     if not normalized:
         return DownloadResult(
@@ -99,7 +224,9 @@ def download_broadcast(
         "--output", output_template,
         "--merge-output-format", "mp4",
         "--no-warnings",
-        "--newline",            # Progress on new lines
+        # Line-per-update: we stream lines through the pipe and collapse the
+        # progress ones into a single in-place display line.
+        "--newline",
         "--no-overwrites",      # Skip already downloaded
         normalized,
     ]
@@ -123,9 +250,30 @@ def download_broadcast(
         # Start rotation extraction in parallel with yt-dlp download
         # Both read from CDN independently; no need to wait.
         rotation_result: list = []
+        progress_state_lock = threading.Lock()
+        video_progress = "starting"
+        metadata_progress = "preparing"
+
+        def _render_parallel_progress() -> None:
+            if stages:
+                return
+            with progress_state_lock:
+                _write_progress(f"Video {video_progress} | Metadata {metadata_progress}")
+
+        def _metadata_progress(completed: int, total: int) -> None:
+            nonlocal metadata_progress
+            with progress_state_lock:
+                metadata_progress = _metadata_progress_text(completed, total)
+            _render_parallel_progress()
+
         def _run_sidecar():
             try:
-                sc = extract_rotation_sidecar(normalized, output_dir, browser=browser)
+                sc = extract_rotation_sidecar(
+                    normalized,
+                    output_dir,
+                    browser=browser,
+                    progress_callback=_metadata_progress,
+                )
                 rotation_result.append(("ok", str(sc)))
             except Exception as e:
                 rotation_result.append(("error", e))
@@ -136,6 +284,18 @@ def download_broadcast(
         for line in process.stdout:
             line = line.rstrip()
             output_lines.append(line)
+
+            # Collapse yt-dlp progress updates into a single in-place line;
+            # print other status lines normally.
+            progress_text = _download_progress_text(line)
+            if progress_text:
+                if not stages:
+                    with progress_state_lock:
+                        video_progress = progress_text
+                    _render_parallel_progress()
+                continue
+            if not stages:
+                _clear_progress()
 
             # Always show progress/status lines
             if verbose or "[download]" in line or "[Merger]" in line or "already" in line.lower():
@@ -150,11 +310,24 @@ def download_broadcast(
                 output_file = line.split("Destination:")[-1].strip()
 
         process.wait()
+        if not stages:
+            _clear_progress()
 
         if process.returncode == 0:
+            console.print(f"  [green]Video downloaded[/green]" + (f" → {output_file}" if output_file else ""))
             sidecar_file = None
             warning = None
-            rotation_thread.join(timeout=300)
+            if rotation_result:
+                rotation_thread.join(timeout=300)
+            elif stages:
+                console.print("  [dim]Downloading metadata...[/dim]")
+                rotation_thread.join(timeout=300)
+            else:
+                with progress_state_lock:
+                    video_progress = "complete"
+                _render_parallel_progress()
+                rotation_thread.join(timeout=300)
+                _clear_progress()
             if rotation_result:
                 r = rotation_result[0]
                 kind, value = r
@@ -167,7 +340,34 @@ def download_broadcast(
             rotation_applied = False
             if sidecar_file and output_file and Path(output_file).exists():
                 try:
-                    _apply_rotation(output_file, sidecar_file)
+                    if stages:
+                        console.print("  [dim]Converting orientation...[/dim]")
+                        _apply_rotation(output_file, sidecar_file)
+                    else:
+                        def _rotation_progress(
+                            encoded_seconds: float,
+                            total_seconds: float,
+                            frame: int | None,
+                            speed: str | None,
+                            phase: str,
+                        ) -> None:
+                            if total_seconds:
+                                percent = min(encoded_seconds / total_seconds * 100, 100)
+                                status = f"{phase} {percent:.1f}% ({_fmt_elapsed(encoded_seconds)}/{_fmt_elapsed(total_seconds)})"
+                            else:
+                                status = f"{phase} {_fmt_elapsed(encoded_seconds)}"
+                            if frame is not None:
+                                status += f" frame {frame}"
+                            if speed:
+                                status += f" at {speed}"
+                            _write_progress(status)
+
+                        _apply_rotation(
+                            output_file,
+                            sidecar_file,
+                            progress_callback=_rotation_progress,
+                        )
+                        _clear_progress()
                     # rotate_video returns the same path when it replaces in-place
                     rotation_applied = True
                     console.print(f"  [green]Rotation corrected[/green] → {output_file}")

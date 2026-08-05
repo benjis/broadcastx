@@ -8,8 +8,11 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from .id3 import ID3RotationSample
+
+RotationProgressCallback = Callable[[float, float, int | None, str | None, str], None]
 
 
 @dataclass(frozen=True)
@@ -127,6 +130,55 @@ def _rotation_frame_size(width: int, height: int, rotation: int) -> tuple[int, i
     return width, height
 
 
+def _run_ffmpeg_with_progress(
+    cmd: list[str],
+    *,
+    progress_callback: RotationProgressCallback | None,
+    offset_seconds: float = 0,
+    total_seconds: float = 0,
+    phase: str,
+) -> None:
+    """Run ffmpeg and relay its machine-readable progress records."""
+    if progress_callback is None:
+        subprocess.run(cmd, check=True, capture_output=True)
+        return
+
+    process = subprocess.Popen(
+        [*cmd[:-1], "-progress", "pipe:1", "-nostats", cmd[-1]],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    fields: dict[str, str] = {}
+    assert process.stdout is not None
+    for line in process.stdout:
+        key, separator, value = line.rstrip().partition("=")
+        if not separator:
+            continue
+        fields[key] = value
+        if key != "progress":
+            continue
+        try:
+            encoded_seconds = float(fields.get("out_time_us", fields.get("out_time_ms", "0"))) / 1_000_000
+        except ValueError:
+            encoded_seconds = 0
+        try:
+            frame = int(fields["frame"])
+        except (KeyError, ValueError):
+            frame = None
+        progress_callback(
+            min(offset_seconds + encoded_seconds, total_seconds) if total_seconds else offset_seconds + encoded_seconds,
+            total_seconds,
+            frame,
+            fields.get("speed"),
+            phase,
+        )
+        fields = {}
+    stderr = process.stderr.read() if process.stderr else ""
+    if process.wait() != 0:
+        raise subprocess.CalledProcessError(process.returncode, cmd, stderr=stderr)
+
+
 def _extract_rotate_segment(
     video_path: Path,
     output_path: Path,
@@ -135,6 +187,11 @@ def _extract_rotate_segment(
     canvas_h: int,
     original_w: int,
     original_h: int,
+    progress_callback: RotationProgressCallback | None = None,
+    offset_seconds: float = 0,
+    total_seconds: float = 0,
+    segment_number: int = 1,
+    segment_count: int = 1,
 ) -> None:
     duration = interval.end_sec - interval.start_sec
     if duration <= 0:
@@ -158,10 +215,21 @@ def _extract_rotate_segment(
         "-c:a", "aac", "-avoid_negative_ts", "make_zero", "-y",
         str(output_path),
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    _run_ffmpeg_with_progress(
+        cmd,
+        progress_callback=progress_callback,
+        offset_seconds=offset_seconds,
+        total_seconds=total_seconds,
+        phase=f"Rotating segment {segment_number}/{segment_count}",
+    )
 
 
-def _concat_segments(segment_paths: list[Path], output_path: Path) -> None:
+def _concat_segments(
+    segment_paths: list[Path],
+    output_path: Path,
+    progress_callback: RotationProgressCallback | None = None,
+    total_seconds: float = 0,
+) -> None:
     if len(segment_paths) == 1:
         os.replace(str(segment_paths[0]), str(output_path))
         return
@@ -177,7 +245,12 @@ def _concat_segments(segment_paths: list[Path], output_path: Path) -> None:
         "-map", "[outv]", "-map", "[outa]",
         "-y", str(output_path),
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    _run_ffmpeg_with_progress(
+        cmd,
+        progress_callback=progress_callback,
+        total_seconds=total_seconds,
+        phase="Joining segments",
+    )
 
 
 def rotate_video(
@@ -186,6 +259,7 @@ def rotate_video(
     output_path: str | Path | None = None,
     *,
     dry_run: bool = False,
+    progress_callback: RotationProgressCallback | None = None,
 ) -> Path:
     video_path = Path(video_path)
     sidecar_path = Path(sidecar_path)
@@ -222,7 +296,12 @@ def rotate_video(
             tmp = output_path.with_name(output_path.stem + ".rotating.mp4")
             try:
                 cmd = ["ffmpeg", "-i", str(video_path), "-vf", vf, "-c:a", "aac", "-y", str(tmp)]
-                subprocess.run(cmd, check=True, capture_output=True)
+                _run_ffmpeg_with_progress(
+                    cmd,
+                    progress_callback=progress_callback,
+                    total_seconds=dur,
+                    phase="Rotating video",
+                )
                 if tmp.exists():
                     os.replace(str(tmp), str(output_path))
             except BaseException:
@@ -234,9 +313,24 @@ def rotate_video(
     if not dry_run:
         with tempfile.TemporaryDirectory(prefix="broadcastx_rotate_") as tmpdir:
             segments: list[Path] = []
+            processed_seconds = 0.0
             for idx, iv in enumerate(intervals):
                 seg = Path(tmpdir) / f"seg_{idx:04d}.mp4"
-                _extract_rotate_segment(video_path, seg, iv, cw, ch, w, h)
+                _extract_rotate_segment(
+                    video_path,
+                    seg,
+                    iv,
+                    cw,
+                    ch,
+                    w,
+                    h,
+                    progress_callback=progress_callback,
+                    offset_seconds=processed_seconds,
+                    total_seconds=dur,
+                    segment_number=idx + 1,
+                    segment_count=len(intervals),
+                )
                 segments.append(seg)
-            _concat_segments(segments, output_path)
+                processed_seconds += iv.end_sec - iv.start_sec
+            _concat_segments(segments, output_path, progress_callback, dur)
     return output_path

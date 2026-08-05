@@ -30,6 +30,15 @@ console = Console()
 
 
 from .models import BroadcastInfo, extract_broadcasts_from_response
+
+@dataclass
+class ScanResult:
+    """Result of scanning a user's timeline."""
+    username: str
+    broadcasts: list[BroadcastInfo] = field(default_factory=list)
+    tweets_scanned: int = 0
+    scrolls_performed: int = 0
+    errors: list[str] = field(default_factory=list)
 async def scan_user(
     username: str,
     max_scrolls: int = DEFAULT_MAX_SCROLLS,

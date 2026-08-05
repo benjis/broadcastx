@@ -263,7 +263,10 @@ async def _background_download(
     """Download a broadcast in a background thread; log the result event."""
     try:
         result = await asyncio.to_thread(
-            download_broadcast, url, output_dir=output_dir, browser=browser
+            download_broadcast, url, output_dir=output_dir, browser=browser,
+            # Stages mode: monitor logs share this terminal, so the
+            # background download must never write \r progress lines.
+            progress="stages",
         )
         _append_event(output_path, {
             "type": "download_finished",

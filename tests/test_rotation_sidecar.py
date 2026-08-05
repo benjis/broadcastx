@@ -3,9 +3,11 @@ import json
 import tempfile
 from pathlib import Path
 import unittest
+from unittest import mock
 
 from broadcastx.rotation import (
     ID3RotationSample,
+    extract_rotation_sidecar,
     load_sidecar,
     parse_id3_rotation_sample,
     quantize_rotation_series,
@@ -112,8 +114,6 @@ class RotationSidecarTests(unittest.TestCase):
             path.write_text("")
             self.assertEqual(len(load_sidecar(path)), 0)
 
-if __name__ == "__main__":
-    unittest.main()
     def test_parse_id3_rotation_json_metadata(self):
         metadata = {
             "rotation": 89.721233,
@@ -151,6 +151,17 @@ if __name__ == "__main__":
 
         self.assertEqual([s.rotation for s in quantized], [90, 90, 180, 270, 0])
 
+    def test_quantize_rotation_series_handles_a_rotation_change(self):
+        """A changed cardinal rotation must not depend on an undefined helper."""
+        samples = [
+            ID3RotationSample(segment_index=0, raw_rotation=89.7),
+            ID3RotationSample(segment_index=1, raw_rotation=179.1),
+        ]
+
+        quantized = quantize_rotation_series(samples)
+
+        self.assertEqual([sample.rotation for sample in quantized], [90, 180])
+
     def test_quantize_rotation_series_uses_hysteresis_near_boundaries(self):
         samples = [
             ID3RotationSample(segment_index=0, raw_rotation=134.0),
@@ -162,6 +173,22 @@ if __name__ == "__main__":
         quantized = quantize_rotation_series(samples, hysteresis_degrees=10.0)
 
         self.assertEqual([s.rotation for s in quantized], [90, 90, 90, 180])
+
+    def test_extract_rotation_sidecar_reports_segment_progress(self):
+        progress = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch("broadcastx.rotation._resolve_hls_playlist_url", return_value="https://example.test/stream.m3u8"),
+                mock.patch("broadcastx.rotation._http_text", return_value="#EXTM3U\nsegment-1.ts\nsegment-2.ts"),
+                mock.patch("broadcastx.rotation._http_bytes", return_value=b""),
+            ):
+                extract_rotation_sidecar(
+                    "https://x.com/i/broadcasts/1vAxRkBbDRzKl",
+                    Path(tmp),
+                    progress_callback=lambda completed, total: progress.append((completed, total)),
+                )
+
+        self.assertEqual(progress, [(0, 2), (1, 2), (2, 2)])
 
 
 if __name__ == "__main__":
