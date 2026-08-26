@@ -114,14 +114,9 @@ def _probe_video(path: str | Path) -> tuple[int, int, float]:
     return stream["width"], stream["height"], float(stream.get("duration") or 0)
 
 
-def _compute_canvas(width: int, height: int, intervals: RotationIntervals) -> tuple[int, int]:
-    all_w: set[int] = {width}
-    all_h: set[int] = {height}
-    for iv in intervals.intervals:
-        if iv.rotation in (90, 270):
-            all_w.add(height)
-            all_h.add(width)
-    return max(all_w), max(all_h)
+def _compute_canvas(width: int, height: int) -> tuple[int, int]:
+    """Return one landscape canvas for a mixed-orientation timeline."""
+    return max(width, height), min(width, height)
 
 
 def _rotation_frame_size(width: int, height: int, rotation: int) -> tuple[int, int]:
@@ -197,18 +192,22 @@ def _extract_rotate_segment(
     if duration <= 0:
         return
     fw, fh = _rotation_frame_size(original_w, original_h, interval.rotation)
-    pad_x = (canvas_w - fw) // 2
-    pad_y = (canvas_h - fh) // 2
     if interval.rotation == 0:
-        vf = f"pad={canvas_w}:{canvas_h}:{pad_x}:{pad_y}:black"
+        orientation_filter = ""
     elif interval.rotation == 90:
-        vf = f"rotate=90*PI/180:ow={fw}:oh={fh},pad={canvas_w}:{canvas_h}:{pad_x}:{pad_y}:black"
+        orientation_filter = f"rotate=90*PI/180:ow={fw}:oh={fh},"
     elif interval.rotation == 180:
-        vf = f"rotate=PI,pad={canvas_w}:{canvas_h}:{pad_x}:{pad_y}:black"
+        orientation_filter = "rotate=PI,"
     elif interval.rotation == 270:
-        vf = f"rotate=270*PI/180:ow={fw}:oh={fh},pad={canvas_w}:{canvas_h}:{pad_x}:{pad_y}:black"
+        orientation_filter = f"rotate=270*PI/180:ow={fw}:oh={fh},"
     else:
-        vf = f"pad={canvas_w}:{canvas_h}:{pad_x}:{pad_y}:black"
+        orientation_filter = ""
+    vf = (
+        f"{orientation_filter}"
+        f"scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease:"
+        "force_divisible_by=2,"
+        f"pad={canvas_w}:{canvas_h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
+    )
     cmd = [
         "ffmpeg", "-ss", str(interval.start_sec), "-i", str(video_path),
         "-t", str(duration), "-vf", vf,
@@ -309,7 +308,7 @@ def rotate_video(
                     tmp.unlink()
                 raise
         return output_path
-    cw, ch = _compute_canvas(w, h, timeline)
+    cw, ch = _compute_canvas(w, h)
     if not dry_run:
         with tempfile.TemporaryDirectory(prefix="broadcastx_rotate_") as tmpdir:
             segments: list[Path] = []

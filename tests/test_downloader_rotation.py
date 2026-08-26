@@ -1,3 +1,6 @@
+import json
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -126,6 +129,118 @@ class DownloaderRotationTests(unittest.TestCase):
             out = rotate_video(video, sidecar, output_path=output, dry_run=True)
             self.assertEqual(out, output)
             self.assertFalse(output.exists())
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg and ffprobe are required")
+class MixedOrientationLayoutTests(unittest.TestCase):
+    def test_mixed_orientation_uses_landscape_canvas_regardless_of_initial_orientation(self):
+        """Portrait is pillarboxed while landscape fills the same output canvas."""
+        cases = (
+            (160, 90, (90, 0)),
+            (160, 90, (0, 90)),
+            (160, 90, (270, 180)),
+            (160, 90, (180, 270)),
+            (90, 160, (90, 0)),
+            (90, 160, (0, 90)),
+            (90, 160, (270, 180)),
+            (90, 160, (180, 270)),
+        )
+        for source_width, source_height, rotations in cases:
+            with (
+                self.subTest(source_size=(source_width, source_height), rotations=rotations),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
+                tmp_path = Path(tmp)
+                video = tmp_path / "input.mp4"
+                output = tmp_path / "output.mp4"
+                sidecar = tmp_path / "rotation.jsonl"
+
+                subprocess.run(
+                    [
+                        "ffmpeg", "-v", "error",
+                        "-f", "lavfi", "-i",
+                        f"color=c=red:s={source_width}x{source_height}:r=24:d=2",
+                        "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+                        "-t", "2", "-shortest",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                        "-y", str(video),
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+                sidecar.write_text(
+                    "\n".join([
+                        json.dumps({
+                            "segment_index": 0,
+                            "raw_rotation": rotations[0],
+                            "rotation": rotations[0],
+                            "ntp": 1000.0,
+                        }),
+                        json.dumps({
+                            "segment_index": 1,
+                            "raw_rotation": rotations[1],
+                            "rotation": rotations[1],
+                            "ntp": 1001.0,
+                        }),
+                    ]) + "\n",
+                )
+
+                rotate_video(video, sidecar, output_path=output)
+
+                probe = subprocess.run(
+                    [
+                        "ffprobe", "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=width,height", "-of", "json", str(output),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                stream = json.loads(probe.stdout)["streams"][0]
+                self.assertEqual((stream["width"], stream["height"]), (160, 90))
+
+                for timestamp, rotation in ((0.5, rotations[0]), (1.5, rotations[1])):
+                    frame = self._rgb_frame(output, timestamp, 160, 90)
+                    left_pixel = self._pixel(frame, 160, 5, 45)
+                    center_pixel = self._pixel(frame, 160, 80, 45)
+                    self.assertTrue(self._is_red(center_pixel))
+                    if rotation in (90, 270):
+                        oriented_width, oriented_height = source_height, source_width
+                    else:
+                        oriented_width, oriented_height = source_width, source_height
+                    if oriented_width < oriented_height:
+                        self.assertTrue(self._is_black(left_pixel))
+                    else:
+                        self.assertTrue(self._is_red(left_pixel))
+
+    @staticmethod
+    def _rgb_frame(video: Path, timestamp: float, width: int, height: int) -> bytes:
+        result = subprocess.run(
+            [
+                "ffmpeg", "-v", "error", "-ss", str(timestamp), "-i", str(video),
+                "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        expected_size = width * height * 3
+        if len(result.stdout) != expected_size:
+            raise AssertionError(f"Expected {expected_size} RGB bytes, got {len(result.stdout)}")
+        return result.stdout
+
+    @staticmethod
+    def _pixel(frame: bytes, width: int, x: int, y: int) -> tuple[int, int, int]:
+        offset = (y * width + x) * 3
+        return tuple(frame[offset:offset + 3])
+
+    @staticmethod
+    def _is_black(pixel: tuple[int, int, int]) -> bool:
+        return max(pixel) < 24
+
+    @staticmethod
+    def _is_red(pixel: tuple[int, int, int]) -> bool:
+        red, green, blue = pixel
+        return red > 180 and green < 80 and blue < 80
 
 
 class _ProgressProcess:
