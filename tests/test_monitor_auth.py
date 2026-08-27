@@ -4,27 +4,28 @@ import os
 import time
 from unittest.mock import patch
 
-from broadcastx.monitor import _has_auth_cookies, _looks_logged_out, _now_iso
+from broadcastx.monitor import _now_iso
+from broadcastx.x_auth import has_auth_cookies, looks_logged_out
 
 
 class MonitorAuthTests(unittest.TestCase):
     def test_has_auth_cookies_requires_auth_token_and_ct0(self):
-        self.assertTrue(_has_auth_cookies([
+        self.assertTrue(has_auth_cookies([
             {"name": "auth_token"},
             {"name": "ct0"},
             {"name": "guest_id"},
         ]))
-        self.assertFalse(_has_auth_cookies([{"name": "auth_token"}]))
-        self.assertFalse(_has_auth_cookies([{"name": "ct0"}]))
+        self.assertFalse(has_auth_cookies([{"name": "auth_token"}]))
+        self.assertFalse(has_auth_cookies([{"name": "ct0"}]))
 
     def test_looks_logged_out_for_x_sign_in_pages(self):
-        self.assertTrue(_looks_logged_out(
+        self.assertTrue(looks_logged_out(
             "Happening now.\nContinue with phone\nEmail or username\nContinue"
         ))
-        self.assertTrue(_looks_logged_out(
+        self.assertTrue(looks_logged_out(
             "New to X?\nSign up now\nDon't miss what's happening\nLog in\nSign up"
         ))
-        self.assertFalse(_looks_logged_out(
+        self.assertFalse(looks_logged_out(
             "Home\nFollowing\nFor you\nThis broadcast is live"
         ))
 

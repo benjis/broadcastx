@@ -130,25 +130,6 @@ broadcastx monitor @username --no-download
 多个用户共享一个 Chromium 配置文件，只需登录一次。
 
 事件记录到 `output/monitor_events.json`。
-### 抓取所有历史直播
-
-```bash
-broadcastx scrape @username
-
-# 忽略已保存状态，重新开始
-broadcastx scrape @username --fresh
-
-# 添加延迟，显示详细输出
-broadcastx scrape @username --delay 2.0 -v
-
-# 直接提供登录凭证（跳过浏览器登录）
-broadcastx scrape @username \
-  --auth-token "your_auth_token" \
-  --csrf-token "your_ct0" \
-  --user-id "1234567890"
-```
-
-使用 GraphQL API 分页，支持游标恢复，可用于遍历全部历史记录。状态保存在本地，可在限速后继续。
 
 ## 输出目录结构
 
@@ -172,15 +153,12 @@ broadcastx download --from output/broadcasts.json
 # 监控并自动下载
 broadcastx monitor @username -o ./videos
 
-# 批量抓取 + 下载
-broadcastx scrape @username
-broadcastx download --from output/username_broadcasts.json
 ```
 
 ## 工作原理
 
 ### 扫描器
-使用 Playwright 拦截 Twitter 的 GraphQL API 响应（`UserTweets` / `TweetDetail`）。比 DOM 解析更稳定，因为 JSON 响应结构变化频率远低于 HTML。
+使用 Playwright 拦截 X 页面自身产生的 timeline GraphQL 响应。扫描器通过目标用户的 post ID 判断进度，只从能够确认属于目标用户的 post 中提取直播链接，并且不依赖固定的 GraphQL operation 名称。
 
 ### 下载器
 封装 `yt-dlp`（内置 `TwitterBroadcastIE` 提取器），并增加以下功能：

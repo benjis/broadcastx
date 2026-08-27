@@ -1,0 +1,262 @@
+{
+  "data": {
+    "user": {
+      "result": {
+        "timeline_v2": {
+          "timeline": {
+            "instructions": [
+              {
+                "entries": [
+                  {
+                    "entryId": "tweet-1000000000000000001",
+                    "content": {
+                      "itemContent": {
+                        "tweet_results": {
+                          "result": {
+                            "__typename": "Tweet",
+                            "rest_id": "1000000000000000001",
+                            "core": {
+                              "user_results": {
+                                "result": {
+                                  "legacy": {
+                                    "screen_name": "target_creator"
+                                  }
+                                }
+                              }
+                            },
+                            "legacy": {
+                              "id_str": "1000000000000000001",
+                              "full_text": "Synthetic target broadcast",
+                              "created_at": "Mon Jan 01 00:00:00 +0000 2024",
+                              "entities": {
+                                "urls": [
+                                  {
+                                    "expanded_url": "https://x.com/i/broadcasts/1TargetOwnABC"
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "entryId": "tweet-1000000000000000002",
+                    "content": {
+                      "itemContent": {
+                        "tweet_results": {
+                          "result": {
+                            "__typename": "Tweet",
+                            "rest_id": "1000000000000000002",
+                            "core": {
+                              "user_results": {
+                                "result": {
+                                  "core": {
+                                    "screen_name": "TARGET_CREATOR"
+                                  }
+                                }
+                              }
+                            },
+                            "legacy": {
+                              "id_str": "1000000000000000002",
+                              "full_text": "Synthetic card broadcast",
+                              "entities": {
+                                "urls": []
+                              }
+                            },
+                            "card": {
+                              "legacy": {
+                                "binding_values": [
+                                  {
+                                    "value": {
+                                      "string_value": "https://x.com/i/broadcasts/1TargetCardDEF"
+                                    }
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "entryId": "tweet-1000000000000000003",
+                    "content": {
+                      "itemContent": {
+                        "tweet_results": {
+                          "result": {
+                            "__typename": "Tweet",
+                            "rest_id": "1000000000000000003",
+                            "core": {
+                              "user_results": {
+                                "result": {
+                                  "legacy": {
+                                    "screen_name": "target_creator"
+                                  }
+                                }
+                              }
+                            },
+                            "legacy": {
+                              "id_str": "1000000000000000003",
+                              "full_text": "Synthetic quote without an owned broadcast",
+                              "entities": {
+                                "urls": []
+                              }
+                            },
+                            "quoted_status_result": {
+                              "result": {
+                                "__typename": "Tweet",
+                                "rest_id": "2000000000000000001",
+                                "core": {
+                                  "user_results": {
+                                    "result": {
+                                      "legacy": {
+                                        "screen_name": "other_creator"
+                                      }
+                                    }
+                                  }
+                                },
+                                "legacy": {
+                                  "id_str": "2000000000000000001",
+                                  "full_text": "Synthetic quoted broadcast",
+                                  "entities": {
+                                    "urls": [
+                                      {
+                                        "expanded_url": "https://x.com/i/broadcasts/1QuotedOtherGH"
+                                      }
+                                    ]
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "entryId": "tweet-1000000000000000004",
+                    "content": {
+                      "itemContent": {
+                        "tweet_results": {
+                          "result": {
+                            "__typename": "Tweet",
+                            "rest_id": "1000000000000000004",
+                            "core": {
+                              "user_results": {
+                                "result": {
+                                  "legacy": {
+                                    "screen_name": "target_creator"
+                                  }
+                                }
+                              }
+                            },
+                            "legacy": {
+                              "id_str": "1000000000000000004",
+                              "full_text": "Synthetic repost wrapper",
+                              "entities": {
+                                "urls": []
+                              },
+                              "retweeted_status_result": {
+                                "result": {
+                                  "__typename": "Tweet",
+                                  "rest_id": "2000000000000000002",
+                                  "core": {
+                                    "user_results": {
+                                      "result": {
+                                        "legacy": {
+                                          "screen_name": "other_creator"
+                                        }
+                                      }
+                                    }
+                                  },
+                                  "legacy": {
+                                    "id_str": "2000000000000000002",
+                                    "full_text": "Synthetic reposted broadcast",
+                                    "entities": {
+                                      "urls": [
+                                        {
+                                          "expanded_url": "https://x.com/i/broadcasts/1RepostOtherJK"
+                                        }
+                                      ]
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "entryId": "tweet-1000000000000000005",
+                    "content": {
+                      "itemContent": {
+                        "tweet_results": {
+                          "result": {
+                            "__typename": "TweetWithVisibilityResults",
+                            "tweet": {
+                              "__typename": "Tweet",
+                              "rest_id": "1000000000000000005",
+                              "core": {
+                                "user_results": {
+                                  "result": {
+                                    "legacy": {
+                                      "screen_name": "target_creator"
+                                    }
+                                  }
+                                }
+                              },
+                              "legacy": {
+                                "id_str": "1000000000000000005",
+                                "full_text": "Synthetic visibility-wrapped broadcast",
+                                "entities": {
+                                  "urls": [
+                                    {
+                                      "expanded_url": "https://x.com/i/broadcasts/1VisibleOwnLMN"
+                                    }
+                                  ]
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "entryId": "tweet-1000000000000000006",
+                    "content": {
+                      "itemContent": {
+                        "tweet_results": {
+                          "result": {
+                            "__typename": "Tweet",
+                            "rest_id": "1000000000000000006",
+                            "legacy": {
+                              "id_str": "1000000000000000006",
+                              "full_text": "Synthetic unknown-author broadcast",
+                              "entities": {
+                                "urls": [
+                                  {
+                                    "expanded_url": "https://x.com/i/broadcasts/1UnknownAuthor"
+                                  }
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

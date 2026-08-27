@@ -12,6 +12,8 @@ from rich.console import Console
 
 from .config import BROADCAST_ID_RE, DEFAULT_BROWSER, DEFAULT_OUTPUT_DIR, DEFAULT_VIDEOS_DIR, extract_broadcast_id, normalize_broadcast_url
 from .downloader import download_broadcast
+from .x_auth import has_auth_cookies as _has_auth_cookies
+from .x_auth import looks_logged_out as _looks_logged_out
 
 console = Console()
 
@@ -52,24 +54,6 @@ class BroadcastStatus:
 
 def _now_iso() -> str:
     return datetime.now().astimezone().isoformat()
-
-
-def _has_auth_cookies(cookies: list[dict]) -> bool:
-    names = {cookie.get("name") for cookie in cookies}
-    return "auth_token" in names and "ct0" in names
-
-
-def _looks_logged_out(text: str) -> bool:
-    lowered = text.lower()
-    logged_out_markers = (
-        "happening now",
-        "email or username",
-        "new to x?",
-        "sign up now",
-        "don't miss what's happening",
-    )
-    auth_actions = ("log in", "sign up", "create account", "continue with")
-    return any(marker in lowered for marker in logged_out_markers) and any(action in lowered for action in auth_actions)
 
 
 def _state_bucket(value: str | None) -> str | None:

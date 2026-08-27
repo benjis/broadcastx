@@ -21,18 +21,10 @@ BROADCAST_PATTERNS = [
     re.compile(rf"https?://(?:www\.)?pscp\.tv/w/({BROADCAST_ID_RE})(?![A-Za-z0-9_])"),
 ]
 
-# Twitter GraphQL endpoints to intercept
-GRAPHQL_ENDPOINTS = [
-    "UserTweets",
-    "UserTweetsAndReplies",
-    "TweetDetail",
-    "SearchTimeline",
-]
-
 # Scanner defaults
-DEFAULT_MAX_SCROLLS = 100       # Maximum number of scroll actions
+DEFAULT_MAX_SCROLLS = 500       # Safety cap; idle detection normally stops first
 DEFAULT_SCROLL_DELAY = 2.0      # Seconds between scrolls
-DEFAULT_IDLE_TIMEOUT = 10.0     # Stop after N seconds with no new tweets
+DEFAULT_IDLE_TIMEOUT = 20.0     # Tolerate transient X timeline loading stalls
 DEFAULT_HEADLESS = False        # Show browser by default (useful for login)
 
 # yt-dlp output template — uses broadcast ID as filename

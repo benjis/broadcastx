@@ -15,12 +15,18 @@ import click
 from rich.console import Console
 
 from . import __version__
-from .config import DEFAULT_BROADCASTS_FILE, DEFAULT_BROWSER, DEFAULT_VIDEOS_DIR
+from .config import (
+    DEFAULT_BROADCASTS_FILE,
+    DEFAULT_BROWSER,
+    DEFAULT_IDLE_TIMEOUT,
+    DEFAULT_MAX_SCROLLS,
+    DEFAULT_SCROLL_DELAY,
+    DEFAULT_VIDEOS_DIR,
+)
 from .downloader import check_ffmpeg, check_yt_dlp, download_all, download_broadcast
 from .monitor import monitor_user, monitor_users
 from .pause_detector import detect_pauses, pause_report, trim_intervals
 from .scanner import scan_user
-from .scrape_broadcasts import scrape_broadcasts
 from .watermark import WatermarkOptions, add_watermark
 
 console = Console()
@@ -48,9 +54,9 @@ def _require_dependencies(*tools: str) -> None:
 
 @main.command()
 @click.argument("username")
-@click.option("--max-scrolls", "-n", default=100, help="Maximum scroll actions (default: 100)")
-@click.option("--scroll-delay", "-d", default=2.0, help="Delay between scrolls in seconds (default: 2.0)")
-@click.option("--idle-timeout", "-t", default=10.0, help="Stop after N seconds with no new data (default: 10)")
+@click.option("--max-scrolls", "-n", default=DEFAULT_MAX_SCROLLS, show_default=True, help="Maximum scroll actions")
+@click.option("--scroll-delay", "-d", default=DEFAULT_SCROLL_DELAY, show_default=True, help="Delay between scrolls in seconds")
+@click.option("--idle-timeout", "-t", default=DEFAULT_IDLE_TIMEOUT, show_default=True, help="Stop after N seconds with no new target posts")
 @click.option("--output", "-o", default=None, help="Output JSON file path")
 @click.option("--headless/--no-headless", default=False, help="Run browser headless (default: visible)")
 def scan(username, max_scrolls, scroll_delay, idle_timeout, output, headless):
@@ -65,51 +71,6 @@ def scan(username, max_scrolls, scroll_delay, idle_timeout, output, headless):
         idle_timeout=idle_timeout,
         headless=headless,
         output_file=output,
-    ))
-
-
-@main.command()
-@click.argument("username")
-@click.option("--output", "-o", default=None, help="Output JSON file path")
-@click.option("--delay", default=1.0, help="Delay between API calls in seconds (default: 1.0)")
-@click.option("--headless/--no-headless", default=False, help="Run browser headless (default: visible)")
-@click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
-@click.option("--fresh", is_flag=True, help="Ignore saved state, start from beginning")
-@click.option("--auth-token", default=None, help="Manual auth_token cookie (skips browser)")
-@click.option("--csrf-token", default=None, help="Manual ct0/CSRF token (skips browser)")
-@click.option("--user-id", default=None, help="Manual user ID (skips user ID lookup)")
-def scrape(username, output, delay, headless, verbose, fresh, auth_token, csrf_token, user_id):
-    """Scrape ALL past broadcasts from a user's timeline.
-
-    Uses GraphQL API pagination. Saves cursor state so you can resume
-    after rate limits. Run the same command again to continue.
-
-    USERNAME can be with or without @ (e.g., @SpaceX or SpaceX).
-
-    Examples:
-
-        broadcastx scrape @SpaceX
-
-        broadcastx scrape @SpaceX --fresh    # ignore saved state
-
-        broadcastx scrape @SpaceX --delay 2.0 -v
-    """
-    if fresh:
-        from .scrape_broadcasts import _state_file
-        state_path = _state_file(username.lstrip("@"))
-        if state_path.exists():
-            state_path.unlink()
-            console.print(f"[dim]Cleared saved state: {state_path}[/dim]")
-
-    asyncio.run(scrape_broadcasts(
-        username=username,
-        headless=headless,
-        output_file=output,
-        delay=delay,
-        verbose=verbose,
-        auth_token=auth_token,
-        csrf_token=csrf_token,
-        user_id=user_id,
     ))
 
 
