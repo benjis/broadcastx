@@ -9,6 +9,7 @@ Usage:
 
 import asyncio
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import click
@@ -16,12 +17,16 @@ from rich.console import Console
 
 from . import __version__
 from .config import (
+    AppConfig,
+    ConfigError,
     DEFAULT_BROADCASTS_FILE,
     DEFAULT_BROWSER,
     DEFAULT_IDLE_TIMEOUT,
     DEFAULT_MAX_SCROLLS,
     DEFAULT_SCROLL_DELAY,
     DEFAULT_VIDEOS_DIR,
+    load_config,
+    normalize_username,
 )
 from .downloader import check_ffmpeg, check_yt_dlp, download_all, download_broadcast
 from .monitor import monitor_user, monitor_users
@@ -30,6 +35,13 @@ from .scanner import scan_user
 from .watermark import WatermarkOptions, add_watermark
 
 console = Console()
+
+
+def _load_cli_config(path: str | None) -> AppConfig:
+    try:
+        return load_config(path)
+    except ConfigError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @click.group()
@@ -75,35 +87,52 @@ def scan(username, max_scrolls, scroll_delay, idle_timeout, output, headless):
 
 
 @main.command()
-@click.argument("usernames", nargs=-1, required=True)
-@click.option("--check-interval", default=30 * 60, help="Seconds between profile checks (default: 1800)")
-@click.option("--live-interval", default=5 * 60, help="Seconds between live-status checks (default: 300)")
+@click.argument("usernames", nargs=-1)
+@click.option("--config", "config_file", type=click.Path(dir_okay=False), default=None, help="Config file (default: ./broadcastx.toml when present)")
+@click.option("--check-interval", type=int, default=None, help="Seconds between profile checks")
+@click.option("--live-interval", type=int, default=None, help="Seconds between live-status checks")
 @click.option("--output", "-o", default=None, help="Monitor event JSON file path")
-@click.option("--output-dir", default=None, help="Directory for downloaded videos")
-@click.option("--browser", "-b", default=DEFAULT_BROWSER, help=f"Browser for yt-dlp cookies (default: {DEFAULT_BROWSER})")
-@click.option("--headless/--no-headless", default=False, help="Run browser headless (default: visible)")
-@click.option("--download/--no-download", default=True, help="Download when broadcast ends (default: download)")
+@click.option("--output-dir", default=None, help="Output root containing per-user directories")
+@click.option("--browser", "-b", default=None, help="Browser for yt-dlp cookies")
+@click.option("--headless/--no-headless", default=None, help="Run browser headless")
+@click.option("--download/--no-download", default=None, help="Download when broadcast ends")
 @click.option("--once", is_flag=True, help="Run one detection cycle, useful for testing")
-def monitor(usernames, check_interval, live_interval, output, output_dir, browser, headless, download, once):
+def monitor(usernames, config_file, check_interval, live_interval, output, output_dir, browser, headless, download, once):
     """Monitor profiles for current live broadcasts and download ended replays.
 
     USERNAMES can be with or without @ (e.g., @SpaceX @NASA or SpaceX NASA).
     Multiple usernames share a single Chromium profile.
     """
-    if download:
+    config = _load_cli_config(config_file)
+    selected_users = [normalize_username(username) for username in usernames] if usernames else [user.username for user in config.users]
+    if not selected_users:
+        raise click.ClickException("Provide USERNAMES or add [[users]] entries to broadcastx.toml")
+    if len(set(selected_users)) != len(selected_users):
+        raise click.ClickException("The monitor user list contains duplicates")
+    if output_dir:
+        config = replace(config, output_root=Path(output_dir).expanduser().resolve())
+
+    resolved_check_interval = check_interval if check_interval is not None else config.monitor.check_interval_seconds
+    resolved_live_interval = live_interval if live_interval is not None else config.monitor.live_interval_seconds
+    resolved_browser = browser if browser is not None else config.monitor.browser
+    resolved_headless = headless if headless is not None else config.monitor.headless
+    resolved_download = download if download is not None else config.monitor.download
+
+    if resolved_download:
         _require_dependencies("yt-dlp", "ffmpeg")
 
 
     asyncio.run(monitor_users(
-        usernames=list(usernames),
-        check_interval=check_interval,
-        live_interval=live_interval,
-        headless=headless,
+        usernames=selected_users,
+        check_interval=resolved_check_interval,
+        live_interval=resolved_live_interval,
+        headless=resolved_headless,
         output_file=output,
-        output_dir=output_dir,
-        browser=browser,
-        download=download,
+        output_dir=None,
+        browser=resolved_browser,
+        download=resolved_download,
         once=once,
+        app_config=config,
     ))
 
 

@@ -10,7 +10,17 @@ from typing import Any
 
 from rich.console import Console
 
-from .config import BROADCAST_ID_RE, DEFAULT_BROWSER, DEFAULT_OUTPUT_DIR, DEFAULT_VIDEOS_DIR, extract_broadcast_id, normalize_broadcast_url
+from .config import (
+    AppConfig,
+    BROADCAST_ID_RE,
+    DEFAULT_BROWSER,
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_VIDEOS_DIR,
+    extract_broadcast_id,
+    normalize_broadcast_url,
+    normalize_username,
+    user_output_dir,
+)
 from .downloader import download_broadcast
 from .x_auth import has_auth_cookies as _has_auth_cookies
 from .x_auth import looks_logged_out as _looks_logged_out
@@ -347,11 +357,21 @@ async def monitor_users(
     browser: str = DEFAULT_BROWSER,
     download: bool = True,
     once: bool = False,
+    app_config: AppConfig | None = None,
 ) -> None:
     """Monitor multiple user profiles for live broadcasts using a single Chromium profile."""
-    usernames = [u.lstrip("@") for u in usernames]
-    output_path = Path(output_file) if output_file else DEFAULT_OUTPUT_DIR / "monitor_events.json"
-    video_dir = Path(output_dir) if output_dir else DEFAULT_VIDEOS_DIR
+    usernames = [normalize_username(u) for u in usernames]
+    root = app_config.output_root if app_config else DEFAULT_OUTPUT_DIR
+    shared_output_path = Path(output_file) if output_file else None
+    shared_video_dir = Path(output_dir) if output_dir else None
+    event_paths = {
+        username: shared_output_path or user_output_dir(root, username) / "monitor_events.json"
+        for username in usernames
+    }
+    video_dirs = {
+        username: shared_video_dir or user_output_dir(root, username) / "videos"
+        for username in usernames
+    }
     seen_completed: set[str] = set()
     live_candidates: dict[str, BroadcastCandidate] = {}
 
@@ -402,7 +422,7 @@ async def monitor_users(
                         if _is_live_candidate_status(status.state):
                             live_candidates[username] = candidate
                             console.print(f"  [green]Live found for @{username}:[/green] {candidate.url}")
-                            _append_event(output_path, {
+                            _append_event(event_paths[username], {
                                 "type": "live_found",
                                 "username": username,
                                 "url": candidate.url,
@@ -425,7 +445,7 @@ async def monitor_users(
                     console.print(f"  [dim]@{username} {candidate.broadcast_id}: {status.state}[/dim]")
 
                     if status.is_ended:
-                        _append_event(output_path, {
+                        _append_event(event_paths[username], {
                             "type": "live_ended",
                             "username": username,
                             "url": candidate.url,
@@ -436,9 +456,9 @@ async def monitor_users(
                             task = asyncio.create_task(
                                 _background_download(
                                     candidate.url,
-                                    video_dir,
+                                    video_dirs[username],
                                     browser,
-                                    output_path,
+                                    event_paths[username],
                                     username,
                                     candidate.broadcast_id,
                                 )
