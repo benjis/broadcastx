@@ -19,7 +19,10 @@ from .config import (
     DEFAULT_HEADLESS,
     DEFAULT_IDLE_TIMEOUT,
     DEFAULT_MAX_SCROLLS,
+    DEFAULT_OUTPUT_DIR,
     DEFAULT_SCROLL_DELAY,
+    normalize_username,
+    user_output_dir,
 )
 
 console = Console()
@@ -104,6 +107,7 @@ async def scan_user(
     idle_timeout: float = DEFAULT_IDLE_TIMEOUT,
     headless: bool = DEFAULT_HEADLESS,
     output_file: Path | str | None = None,
+    output_root: Path | str = DEFAULT_OUTPUT_DIR,
 ) -> ScanResult:
     """
     Scan a Twitter/X user's timeline for broadcast links.
@@ -114,9 +118,9 @@ async def scan_user(
     Uses the real installed Chrome (not Chromium-for-Testing) with a
     persistent profile directory so login cookies are preserved between runs.
     """
-    username = username.lstrip("@")
+    username = normalize_username(username)
     if output_file is None:
-        output_file = DEFAULT_BROADCASTS_FILE
+        output_file = user_output_dir(Path(output_root), username) / "broadcasts.json"
     output_file = Path(output_file)
 
     result = ScanResult(username=username)

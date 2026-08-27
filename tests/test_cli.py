@@ -21,8 +21,33 @@ class CliTests(unittest.TestCase):
         result = CliRunner().invoke(main, ["scan", "--help"])
 
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("[default: 500]", result.output)
+        self.assertIn("built-in default: 500", result.output)
         self.assertIn("no new target posts", result.output)
+
+    def test_scan_uses_automatic_config_and_user_output_root(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("broadcastx.toml").write_text(
+                """
+output_root = "archive"
+
+[scan]
+max_scrolls = 12
+scroll_delay_seconds = 0.5
+idle_timeout_seconds = 8
+headless = true
+""".strip()
+            )
+            scan_user = AsyncMock()
+            with patch("broadcastx.cli.scan_user", scan_user):
+                result = runner.invoke(main, ["scan", "@Alice"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        kwargs = scan_user.await_args.kwargs
+        self.assertEqual(kwargs["username"], "alice")
+        self.assertEqual(kwargs["max_scrolls"], 12)
+        self.assertTrue(kwargs["headless"])
+        self.assertEqual(kwargs["output_root"].name, "archive")
 
     def test_monitor_without_usernames_uses_automatically_discovered_config(self):
         runner = CliRunner()

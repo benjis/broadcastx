@@ -525,11 +525,16 @@ def download_all(
         List of DownloadResult objects
     """
     all_urls = list(urls or [])
+    username_hints: dict[str, str] = {}
 
     # Load URLs from file if provided
     if from_file:
-        file_urls = _load_urls_from_file(Path(from_file))
+        file_urls, source_username = _load_download_source(Path(from_file))
         all_urls.extend(file_urls)
+        if source_username:
+            for file_url in file_urls:
+                if normalized := normalize_broadcast_url(file_url):
+                    username_hints[normalized] = source_username
 
     if not all_urls:
         console.print("[yellow]No broadcast URLs to download.[/yellow]")
@@ -552,7 +557,14 @@ def download_all(
         results = []
         for i, url in enumerate(unique_urls, 1):
             console.print(f"[bold][{i}/{total}][/bold] {url}")
-            result = download_broadcast(url, output_dir=output_dir, browser=browser, verbose=verbose, app_config=app_config)
+            result = download_broadcast(
+                url,
+                output_dir=output_dir,
+                browser=browser,
+                verbose=verbose,
+                app_config=app_config,
+                username=username_hints.get(url),
+            )
             results.append(result)
             if result.success:
                 console.print(f"  [green]✓ Done[/green]" + (f" → {result.output_file}" if result.output_file else ""))
@@ -566,7 +578,14 @@ def download_all(
         completed_count = 0
 
         def _download_one(index: int, url: str) -> tuple[int, DownloadResult]:
-            return index, download_broadcast(url, output_dir=output_dir, browser=browser, verbose=verbose, app_config=app_config)
+            return index, download_broadcast(
+                url,
+                output_dir=output_dir,
+                browser=browser,
+                verbose=verbose,
+                app_config=app_config,
+                username=username_hints.get(url),
+            )
 
         with ThreadPoolExecutor(max_workers=parallel) as executor:
             futures = {
@@ -597,7 +616,7 @@ def download_all(
     return results
 
 
-def _load_urls_from_file(path: Path) -> list[str]:
+def _load_download_source(path: Path) -> tuple[list[str], str | None]:
     """
     Load broadcast URLs from a JSON file.
 
@@ -608,15 +627,16 @@ def _load_urls_from_file(path: Path) -> list[str]:
     """
     if not path.exists():
         console.print(f"[red]File not found: {path}[/red]")
-        return []
+        return [], None
 
     try:
         data = json.loads(path.read_text())
     except json.JSONDecodeError as e:
         console.print(f"[red]Invalid JSON in {path}: {e}[/red]")
-        return []
+        return [], None
 
     urls = []
+    username = None
     if isinstance(data, list):
         for item in data:
             if isinstance(item, str):
@@ -624,6 +644,12 @@ def _load_urls_from_file(path: Path) -> list[str]:
             elif isinstance(item, dict) and "url" in item:
                 urls.append(item["url"])
     elif isinstance(data, dict) and "broadcasts" in data:
+        raw_username = data.get("username")
+        if isinstance(raw_username, str):
+            try:
+                username = normalize_username(raw_username)
+            except ConfigError:
+                username = None
         for item in data["broadcasts"]:
             if isinstance(item, str):
                 urls.append(item)
@@ -632,4 +658,9 @@ def _load_urls_from_file(path: Path) -> list[str]:
 
     valid = [u for u in urls if is_broadcast_url(u)]
     console.print(f"  [dim]Loaded {len(valid)} broadcast URL(s) from {path}[/dim]")
-    return valid
+    return valid, username
+
+
+def _load_urls_from_file(path: Path) -> list[str]:
+    """Compatibility wrapper returning only URLs from a download source."""
+    return _load_download_source(path)[0]

@@ -66,23 +66,26 @@ def _require_dependencies(*tools: str) -> None:
 
 @main.command()
 @click.argument("username")
-@click.option("--max-scrolls", "-n", default=DEFAULT_MAX_SCROLLS, show_default=True, help="Maximum scroll actions")
-@click.option("--scroll-delay", "-d", default=DEFAULT_SCROLL_DELAY, show_default=True, help="Delay between scrolls in seconds")
-@click.option("--idle-timeout", "-t", default=DEFAULT_IDLE_TIMEOUT, show_default=True, help="Stop after N seconds with no new target posts")
+@click.option("--config", "config_file", type=click.Path(dir_okay=False), default=None, help="Config file (default: ./broadcastx.toml when present)")
+@click.option("--max-scrolls", "-n", type=int, default=None, help=f"Maximum scroll actions (built-in default: {DEFAULT_MAX_SCROLLS})")
+@click.option("--scroll-delay", "-d", type=float, default=None, help="Delay between scrolls in seconds")
+@click.option("--idle-timeout", "-t", type=float, default=None, help="Stop after N seconds with no new target posts")
 @click.option("--output", "-o", default=None, help="Output JSON file path")
-@click.option("--headless/--no-headless", default=False, help="Run browser headless (default: visible)")
-def scan(username, max_scrolls, scroll_delay, idle_timeout, output, headless):
+@click.option("--headless/--no-headless", default=None, help="Run browser headless")
+def scan(username, config_file, max_scrolls, scroll_delay, idle_timeout, output, headless):
     """Scan a user's timeline for broadcast links.
 
     USERNAME can be with or without @ (e.g., @elonmusk or elonmusk).
     """
+    config = _load_cli_config(config_file)
     asyncio.run(scan_user(
-        username=username,
-        max_scrolls=max_scrolls,
-        scroll_delay=scroll_delay,
-        idle_timeout=idle_timeout,
-        headless=headless,
+        username=normalize_username(username),
+        max_scrolls=max_scrolls if max_scrolls is not None else config.scan.max_scrolls,
+        scroll_delay=scroll_delay if scroll_delay is not None else config.scan.scroll_delay_seconds,
+        idle_timeout=idle_timeout if idle_timeout is not None else config.scan.idle_timeout_seconds,
+        headless=headless if headless is not None else config.scan.headless,
         output_file=output,
+        output_root=config.output_root,
     ))
 
 
