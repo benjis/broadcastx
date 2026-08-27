@@ -1,0 +1,33 @@
+# Copy this file to broadcastx.toml in the directory where you run BroadcastX.
+# BroadcastX discovers ./broadcastx.toml automatically. Use --config PATH to
+# select a different file explicitly.
+
+output_root = "output"
+
+[monitor]
+check_interval_seconds = 1800
+live_interval_seconds = 300
+browser = "chrome"
+headless = false
+download = true
+
+[scan]
+max_scrolls = 500
+scroll_delay_seconds = 2.0
+idle_timeout_seconds = 20.0
+headless = false
+
+[download]
+timezone = "UTC"
+datetime_format = "%Y-%m-%d_%H-%M-%S"
+filename_template = "{datetime}_{broadcast_id}"
+
+[[users]]
+username = "A"
+timezone = "Australia/Sydney"
+
+[[users]]
+username = "B"
+timezone = "Asia/Ho_Chi_Minh"
+# datetime_format = "%Y%m%d_%H%M%S"
+# filename_template = "{broadcast_id}_{datetime}"

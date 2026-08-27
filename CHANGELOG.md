@@ -2,6 +2,32 @@
 
 All notable changes to BroadcastX are documented in this file.
 
+## [0.2.1] - 2026-08-28
+
+### Added
+
+- Added automatic `broadcastx.toml` discovery with an explicit `--config` override.
+- Added global monitor, scan, and download settings plus per-user timezone and
+  filename overrides.
+- Added config-driven monitoring with no positional usernames and CLI subset
+  selection when usernames are supplied.
+
+### Changed
+
+- Organized scan results, monitor events, videos, and rotation sidecars under
+  `output/<username>/` by default.
+- Named videos from the broadcast datetime and ID using a configurable,
+  timezone-aware stem shared by the MP4 and rotation sidecar.
+- Automatically resolved a direct broadcast URL's user from yt-dlp metadata.
+- Treated `--output-dir` on monitor and download as an output-root override.
+
+### Compatibility
+
+- Kept config-free scan, monitor, and download commands available with built-in
+  defaults.
+- Left existing output files untouched; BroadcastX does not migrate or delete
+  the pre-0.2.1 layout.
+
 ## [0.2.0] - 2026-08-27
 
 ### Changed

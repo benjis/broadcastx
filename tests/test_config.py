@@ -62,6 +62,8 @@ def test_explicit_missing_config_is_an_error(tmp_path):
         ('[download]\ntimezone = "Sydney"', "Invalid timezone"),
         ('[download]\nfilename_template = "{title}_{broadcast_id}"', "Unknown filename field"),
         ('[download]\nfilename_template = "../{broadcast_id}"', "must produce a file name"),
+        ('[monitor]\ncheck_interval_seconds = "fast"', "invalid value type"),
+        ('[[users]]\nusername = 42', "Invalid X username"),
     ],
 )
 def test_invalid_config_fails_before_runtime(tmp_path, body, message):

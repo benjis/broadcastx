@@ -56,11 +56,43 @@ uv run playwright install chromium
 broadcastx scan @username
 
 # Download broadcasts from scan results
-broadcastx download --from output/broadcasts.json
+broadcastx download --from output/username/broadcasts.json
 
-# Monitor a user for live broadcasts
-broadcastx monitor @username
+# Monitor every user in broadcastx.toml
+broadcastx monitor
 ```
+
+## Configuration
+
+Copy [`broadcastx.example.toml`](broadcastx.example.toml) to `broadcastx.toml`
+in the directory where you run BroadcastX. It is discovered automatically;
+use `--config PATH` only when the config lives elsewhere.
+
+```toml
+output_root = "output"
+
+[monitor]
+check_interval_seconds = 1800
+live_interval_seconds = 300
+download = true
+
+[download]
+timezone = "UTC"
+datetime_format = "%Y-%m-%d_%H-%M-%S"
+filename_template = "{datetime}_{broadcast_id}"
+
+[[users]]
+username = "Alice"
+timezone = "Australia/Sydney"
+
+[[users]]
+username = "Bob"
+timezone = "Asia/Ho_Chi_Minh"
+```
+
+Explicit CLI options override user settings, which override command-wide
+settings, which override built-in defaults. A relative `output_root` is
+resolved from the config file's directory.
 
 ## Usage
 
@@ -73,7 +105,7 @@ broadcastx scan @username
 #   --max-scrolls 500      Safety cap for scroll actions
 #   --scroll-delay 2.0     Seconds between scrolls
 #   --idle-timeout 20.0    Stop after N seconds with no new target posts
-#   --output FILE          Output path (default: output/broadcasts.json)
+#   --output FILE          Override path (default: output/<user>/broadcasts.json)
 #   --headless             Run browser without visible window
 ```
 
@@ -85,23 +117,28 @@ The scanner opens the user's X profile in Chrome, scrolls through the timeline, 
 # Single broadcast
 broadcastx download https://x.com/i/broadcasts/1vAxRkBbDRzKl
 
-# From scan results
-broadcastx download --from output/broadcasts.json
+# From scan results; the scanner username is preserved for routing
+broadcastx download --from output/username/broadcasts.json
 
 # Multiple concurrent downloads
-broadcastx download --from output/broadcasts.json -p 3
+broadcastx download --from output/username/broadcasts.json -p 3
 
-# Custom output directory
-broadcastx download --from output/broadcasts.json -o ./videos
+# Custom output root
+broadcastx download --from output/username/broadcasts.json -o ./archive
 
 # Use Firefox cookies
-broadcastx download --from output/broadcasts.json --browser firefox
+broadcastx download --from output/username/broadcasts.json --browser firefox
 
 # Verbose yt-dlp output
-broadcastx download --from output/broadcasts.json -v
+broadcastx download --from output/username/broadcasts.json -v
 ```
 
 BroadcastX **automatically corrects phone rotation**: if the broadcast carries phone-orientation metadata in the HLS stream, the video is re-encoded so it displays upright in any player.
+
+For a direct URL, BroadcastX reads yt-dlp's uploader ID and broadcast timestamp,
+then selects the matching user config and output directory automatically. If
+the user cannot be identified, it uses global settings and
+`output/unknown/videos/`.
 
 ### Monitor profiles for live broadcasts
 
@@ -112,11 +149,17 @@ broadcastx monitor @username
 # Monitor multiple users simultaneously (shares one Chromium profile)
 broadcastx monitor @SpaceX @NASA @elonmusk
 
+# Monitor every [[users]] entry in broadcastx.toml
+broadcastx monitor
+
+# Select one configured user while retaining that user's settings
+broadcastx monitor Bob
+
 # One-shot test cycle (no loop)
 broadcastx monitor @username --once
 
-# Download to a custom directory
-broadcastx monitor @username -o ./my_videos
+# Use a custom output root
+broadcastx monitor @username --output-dir ./archive
 
 # Custom check intervals (seconds)
 broadcastx monitor @username --check-interval 1800 --live-interval 300
@@ -134,7 +177,7 @@ The monitor runs in a loop:
 
 Multiple users share a single Chromium profile, so you only need to log in once.
 
-Events are logged to `output/monitor_events.json`.
+Events are logged per user to `output/<username>/monitor_events.json`.
 
 ### Add watermarks to videos
 
@@ -173,12 +216,13 @@ Options:
 
 ```
 output/
-├── broadcasts.json          # Scan results
-├── monitor_events.json      # Monitor event log
-└── videos/
-    ├── [title] [id].mp4     # Downloaded broadcast
-    ├── [id].rotation.jsonl  # Rotation timeline sidecar
-    ├── [id].watermarked.mp4 # Watermarked output (optional)
+├── alice/
+│   ├── broadcasts.json
+│   ├── monitor_events.json
+│   └── videos/
+│       ├── 2026-08-28_22-00-00_[id].mp4
+│       └── 2026-08-28_22-00-00_[id].rotation.jsonl
+└── bob/
     └── ...
 ```
 
@@ -187,13 +231,13 @@ output/
 ```bash
 # Scan + download all found broadcasts
 broadcastx scan @username
-broadcastx download --from output/broadcasts.json
+broadcastx download --from output/username/broadcasts.json
 
 # Monitor with auto-download
-broadcastx monitor @username -o ./videos
+broadcastx monitor @username --output-dir ./archive
 
 # Watermark a downloaded video
-broadcastx watermark ./videos/*.mp4 --text "broadcastx" --output ./videos/watermarked/
+broadcastx watermark ./output/username/videos/*.mp4 --text "broadcastx" --output ./output/username/videos/watermarked/
 ```
 
 ## How It Works
@@ -207,7 +251,7 @@ Wraps `yt-dlp` (which has a built-in `TwitterBroadcastIE` extractor) and adds:
 - **Auto-rotation** — Re-encodes the video with correct orientation via ffmpeg
 
 ### Rotation Sidecar
-The JSONL sidecar (`[id].rotation.jsonl`) contains one record per HLS segment:
+The JSONL sidecar shares its filename stem with the MP4 and contains one record per HLS segment:
 - `raw_rotation` — Original sensor angle from Periscope
 - `rotation` — Quantized to 0°, 90°, 180°, or 270° with hysteresis
 - `ntp` — NTP timestamp for timeline reconstruction

@@ -51,11 +51,42 @@ uv run playwright install chromium
 broadcastx scan @username
 
 # 从扫描结果下载直播
-broadcastx download --from output/broadcasts.json
+broadcastx download --from output/username/broadcasts.json
 
-# 监控用户直播状态
-broadcastx monitor @username
+# 监控 broadcastx.toml 中的全部用户
+broadcastx monitor
 ```
+
+## 配置文件
+
+将 [`broadcastx.example.toml`](broadcastx.example.toml) 复制为运行目录下的
+`broadcastx.toml`。BroadcastX 会自动发现它；只有配置文件位于其他位置时
+才需要使用 `--config PATH`。
+
+```toml
+output_root = "output"
+
+[monitor]
+check_interval_seconds = 1800
+live_interval_seconds = 300
+download = true
+
+[download]
+timezone = "UTC"
+datetime_format = "%Y-%m-%d_%H-%M-%S"
+filename_template = "{datetime}_{broadcast_id}"
+
+[[users]]
+username = "Alice"
+timezone = "Australia/Sydney"
+
+[[users]]
+username = "Bob"
+timezone = "Asia/Ho_Chi_Minh"
+```
+
+优先级为：明确传入的 CLI 参数、用户专属配置、命令全局配置、内置默认值。
+相对的 `output_root` 从配置文件所在目录开始解析。
 
 ## 使用说明
 
@@ -68,7 +99,7 @@ broadcastx scan @username
 #   --max-scrolls 100      最大滚动次数
 #   --scroll-delay 2.0     滚动间隔（秒）
 #   --idle-timeout 10.0    无新数据时停止等待时间（秒）
-#   --output FILE          输出路径（默认：output/broadcasts.json）
+#   --output FILE          覆盖输出路径（默认：output/<用户>/broadcasts.json）
 #   --headless             无头模式运行浏览器
 ```
 
@@ -81,22 +112,26 @@ broadcastx scan @username
 broadcastx download https://x.com/i/broadcasts/1vAxRkBbDRzKl
 
 # 从扫描结果批量下载
-broadcastx download --from output/broadcasts.json
+broadcastx download --from output/username/broadcasts.json
 
 # 多并发下载
-broadcastx download --from output/broadcasts.json -p 3
+broadcastx download --from output/username/broadcasts.json -p 3
 
-# 自定义输出目录
-broadcastx download --from output/broadcasts.json -o ./videos
+# 自定义输出根目录
+broadcastx download --from output/username/broadcasts.json -o ./archive
 
 # 使用 Firefox cookies
-broadcastx download --from output/broadcasts.json --browser firefox
+broadcastx download --from output/username/broadcasts.json --browser firefox
 
 # 显示 yt-dlp 详细信息
-broadcastx download --from output/broadcasts.json -v
+broadcastx download --from output/username/broadcasts.json -v
 ```
 
 BroadcastX **自动修正手机旋转方向**：如果直播 HLS 流中包含方向元数据，视频将被重新编码以正确的方向播放。
+
+直接下载 URL 时，BroadcastX 会从 yt-dlp metadata 读取 uploader ID 和直播
+时间，自动选择对应用户的配置与输出目录。无法识别用户时使用全局配置并写入
+`output/unknown/videos/`。
 
 ### 监控直播
 
@@ -107,11 +142,17 @@ broadcastx monitor @username
 # 同时监控多个用户（共享一个 Chromium 配置文件）
 broadcastx monitor @SpaceX @NASA @elonmusk
 
+# 监控 broadcastx.toml 中的全部 [[users]]
+broadcastx monitor
+
+# 只选择 Bob，同时继续应用 Bob 的专属配置
+broadcastx monitor Bob
+
 # 单次检测（不循环）
 broadcastx monitor @username --once
 
-# 下载到自定义目录
-broadcastx monitor @username -o ./my_videos
+# 使用自定义输出根目录
+broadcastx monitor @username --output-dir ./archive
 
 # 自定义检测间隔（秒）
 broadcastx monitor @username --check-interval 1800 --live-interval 300
@@ -129,17 +170,19 @@ broadcastx monitor @username --no-download
 
 多个用户共享一个 Chromium 配置文件，只需登录一次。
 
-事件记录到 `output/monitor_events.json`。
+事件按用户记录到 `output/<用户名>/monitor_events.json`。
 
 ## 输出目录结构
 
 ```
 output/
-├── broadcasts.json          # 扫描结果
-├── monitor_events.json      # 监控事件日志
-└── videos/
-    ├── [title] [id].mp4     # 下载的直播视频
-    ├── [id].rotation.jsonl  # 旋转方向时间线侧车文件
+├── alice/
+│   ├── broadcasts.json
+│   ├── monitor_events.json
+│   └── videos/
+│       ├── 2026-08-28_22-00-00_[id].mp4
+│       └── 2026-08-28_22-00-00_[id].rotation.jsonl
+└── bob/
     └── ...
 ```
 
@@ -148,10 +191,10 @@ output/
 ```bash
 # 扫描 + 下载所有找到的直播
 broadcastx scan @username
-broadcastx download --from output/broadcasts.json
+broadcastx download --from output/username/broadcasts.json
 
 # 监控并自动下载
-broadcastx monitor @username -o ./videos
+broadcastx monitor @username --output-dir ./archive
 
 ```
 
@@ -166,7 +209,7 @@ broadcastx monitor @username -o ./videos
 - **自动旋转修正** —— 通过 ffmpeg 重新编码视频，纠正方向
 
 ### 旋转侧车文件
-JSONL 格式的侧车文件（`[id].rotation.jsonl`）每条记录对应一个 HLS 片段：
+JSONL 侧车文件与 MP4 使用相同的文件名 stem，每条记录对应一个 HLS 片段：
 - `raw_rotation` —— Periscope 的原始传感器角度
 - `rotation` —— 量化后的方向：0°、90°、180° 或 270°（带迟滞处理）
 - `ntp` —— NTP 时间戳，用于时间线重建

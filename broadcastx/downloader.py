@@ -263,6 +263,9 @@ def download_broadcast(
             metadata = BroadcastMetadata()
             metadata_warning = f"Could not read broadcast metadata; using broadcast ID filename: {exc}"
             console.print(f"  [yellow]{metadata_warning}[/yellow]")
+    if naming is not None and metadata is not None and metadata.timestamp is None and metadata_warning is None:
+        metadata_warning = "Broadcast metadata has no timestamp; using broadcast ID filename"
+        console.print(f"  [yellow]{metadata_warning}[/yellow]")
 
     resolved_username = None
     if username:
@@ -274,10 +277,18 @@ def download_broadcast(
             resolved_username = None
     if app_config is not None:
         resolved_username = resolved_username or "unknown"
+        if resolved_username == "unknown":
+            routing_warning = "Broadcast metadata has no usable uploader ID; routing to output/unknown"
+            metadata_warning = f"{metadata_warning}; {routing_warning}" if metadata_warning else routing_warning
+            console.print(f"  [yellow]{routing_warning}[/yellow]")
         naming = app_config.download_for(resolved_username)
         output_dir = Path(output_dir) if output_dir is not None else user_output_dir(app_config.output_root, resolved_username) / "videos"
     else:
         output_dir = Path(output_dir) if output_dir is not None else DEFAULT_VIDEOS_DIR
+
+    if naming is not None and metadata is not None and metadata.timestamp is None and metadata_warning is None:
+        metadata_warning = "Broadcast metadata has no timestamp; using broadcast ID filename"
+        console.print(f"  [yellow]{metadata_warning}[/yellow]")
 
     broadcast_id = extract_broadcast_id(url)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -417,8 +428,9 @@ def download_broadcast(
                 r = rotation_result[0]
                 kind, value = r
                 if kind == "error":
-                    warning = f"Rotation sidecar failed: {value}"
-                    console.print(f"  [yellow]{warning}[/yellow]")
+                    sidecar_warning = f"Rotation sidecar failed: {value}"
+                    warning = f"{warning}; {sidecar_warning}" if warning else sidecar_warning
+                    console.print(f"  [yellow]{sidecar_warning}[/yellow]")
                 else:
                     sidecar_file = value
                     console.print(f"  [green]Rotation sidecar[/green] → {sidecar_file}")
@@ -472,7 +484,10 @@ def download_broadcast(
                 if sidecar_file:
                     staging_sidecar = Path(sidecar_file)
                     if staging_sidecar.exists() and staging_sidecar != final_sidecar_path:
-                        staging_sidecar.rename(final_sidecar_path)
+                        if final_sidecar_path.exists():
+                            staging_sidecar.unlink()
+                        else:
+                            staging_sidecar.rename(final_sidecar_path)
                     sidecar_file = str(final_sidecar_path)
                 output_file = str(final_video_path)
                 console.print(f"  [green]Named artifacts[/green] → {final_video_path.name}")

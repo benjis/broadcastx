@@ -104,6 +104,8 @@ class AppConfig:
 
 def normalize_username(username: str) -> str:
     """Return the stable directory/config key for an X username."""
+    if not isinstance(username, str):
+        raise ConfigError(f"Invalid X username: {username!r}")
     normalized = username.strip().lstrip("@").casefold()
     if not normalized or not re.fullmatch(r"[a-z0-9_]{1,15}", normalized):
         raise ConfigError(f"Invalid X username: {username!r}")
@@ -153,6 +155,9 @@ def _only_keys(table: dict, allowed: set[str], label: str) -> None:
 
 
 def _validate_download_config(config: DownloadConfig, label: str = "[download]") -> None:
+    for field_name in ("timezone", "datetime_format", "filename_template"):
+        if not isinstance(getattr(config, field_name), str):
+            raise ConfigError(f"{label} {field_name} must be a string")
     try:
         ZoneInfo(config.timezone)
     except ZoneInfoNotFoundError as exc:
@@ -208,8 +213,28 @@ def load_config(explicit: Path | str | None = None, cwd: Path | None = None) -> 
     download = DownloadConfig(**download_data)
     scan = ScanConfig(**scan_data)
     _validate_download_config(download)
+    if (
+        not isinstance(monitor.check_interval_seconds, int)
+        or isinstance(monitor.check_interval_seconds, bool)
+        or not isinstance(monitor.live_interval_seconds, int)
+        or isinstance(monitor.live_interval_seconds, bool)
+        or not isinstance(monitor.browser, str)
+        or not isinstance(monitor.headless, bool)
+        or not isinstance(monitor.download, bool)
+    ):
+        raise ConfigError("[monitor] has an invalid value type")
     if monitor.check_interval_seconds <= 0 or monitor.live_interval_seconds <= 0:
         raise ConfigError("Monitor intervals must be greater than zero")
+    if (
+        not isinstance(scan.max_scrolls, int)
+        or isinstance(scan.max_scrolls, bool)
+        or not isinstance(scan.scroll_delay_seconds, (int, float))
+        or isinstance(scan.scroll_delay_seconds, bool)
+        or not isinstance(scan.idle_timeout_seconds, (int, float))
+        or isinstance(scan.idle_timeout_seconds, bool)
+        or not isinstance(scan.headless, bool)
+    ):
+        raise ConfigError("[scan] has an invalid value type")
     if scan.max_scrolls <= 0 or scan.scroll_delay_seconds < 0 or scan.idle_timeout_seconds <= 0:
         raise ConfigError("Scan limits must be positive (scroll delay may be zero)")
 
