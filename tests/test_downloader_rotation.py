@@ -9,7 +9,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from broadcastx import downloader
-from broadcastx.downloader import download_broadcast
+from broadcastx.config import DownloadConfig
+from broadcastx.downloader import BroadcastMetadata, download_broadcast
 from broadcastx.rotation import ID3RotationSample, load_sidecar, rotation_timeline, rotate_video
 
 
@@ -26,6 +27,40 @@ class _FakeProcess:
 
 
 class DownloaderRotationTests(unittest.TestCase):
+    def test_configured_naming_keeps_video_and_sidecar_stems_aligned(self):
+        url = "https://x.com/i/broadcasts/1vAxRkBbDRzKl"
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            staging_video = output_dir / "1vAxRkBbDRzKl.mp4"
+            staging_sidecar = output_dir / "1vAxRkBbDRzKl.rotation.jsonl"
+            staging_video.write_text("fake video")
+            staging_sidecar.write_text("{}\n")
+
+            class _NamedProcess:
+                stdout = iter([f"[download] Destination: {staging_video}\n"])
+                returncode = 0
+
+                def wait(self):
+                    return None
+
+            with (
+                patch("broadcastx.downloader.subprocess.Popen", return_value=_NamedProcess()),
+                patch("broadcastx.downloader.extract_rotation_sidecar", return_value=staging_sidecar),
+                patch("broadcastx.downloader._apply_rotation"),
+            ):
+                result = download_broadcast(
+                    url,
+                    output_dir=output_dir,
+                    naming=DownloadConfig(timezone="Australia/Sydney"),
+                    metadata=BroadcastMetadata(uploader_id="Alice", timestamp=1787918400),
+                )
+
+            expected_stem = "2026-08-28_22-00-00_1vAxRkBbDRzKl"
+            self.assertEqual(result.output_file, str(output_dir / f"{expected_stem}.mp4"))
+            self.assertEqual(result.rotation_sidecar_file, str(output_dir / f"{expected_stem}.rotation.jsonl"))
+            self.assertTrue(Path(result.output_file).exists())
+            self.assertTrue(Path(result.rotation_sidecar_file).exists())
+
     def test_download_broadcast_always_rotates(self):
         import os
         url = "https://x.com/i/broadcasts/1vAxRkBbDRzKl"

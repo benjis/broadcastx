@@ -27,8 +27,10 @@ from rich.console import Console
 from .config import (
     DEFAULT_BROWSER,
     DEFAULT_VIDEOS_DIR,
+    DownloadConfig,
     YTDLP_OUTPUT_TEMPLATE,
     extract_broadcast_id,
+    format_output_stem,
     is_broadcast_url,
     normalize_broadcast_url,
 )
@@ -48,6 +50,39 @@ class DownloadResult:
     rotation_applied: bool = False
     error: str | None = None
     warning: str | None = None
+
+
+@dataclass(frozen=True)
+class BroadcastMetadata:
+    """Metadata needed to route and name one broadcast download."""
+
+    uploader_id: str | None = None
+    timestamp: int | float | None = None
+
+
+def probe_broadcast_metadata(url: str, browser: str = DEFAULT_BROWSER) -> BroadcastMetadata:
+    """Ask yt-dlp for routing/naming metadata without downloading media."""
+    completed = subprocess.run(
+        [
+            "yt-dlp",
+            "--cookies-from-browser", browser,
+            "--dump-single-json",
+            "--skip-download",
+            "--no-warnings",
+            url,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(completed.stdout)
+    timestamp = payload.get("timestamp")
+    if not isinstance(timestamp, (int, float)):
+        timestamp = None
+    uploader_id = payload.get("uploader_id")
+    if not isinstance(uploader_id, str) or not uploader_id.strip():
+        uploader_id = None
+    return BroadcastMetadata(uploader_id=uploader_id, timestamp=timestamp)
 
 
 # In-place progress display. The pipeline (video download, metadata
@@ -170,6 +205,8 @@ def download_broadcast(
     browser: str = DEFAULT_BROWSER,
     verbose: bool = False,
     progress: str = "inplace",
+    naming: DownloadConfig | None = None,
+    metadata: BroadcastMetadata | None = None,
 ) -> DownloadResult:
     """
     Download a single broadcast video using yt-dlp.
@@ -215,7 +252,33 @@ def download_broadcast(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_template = str(output_dir / YTDLP_OUTPUT_TEMPLATE)
+    metadata_warning = None
+    if naming is not None and metadata is None:
+        try:
+            metadata = probe_broadcast_metadata(normalized, browser)
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+            metadata = BroadcastMetadata()
+            metadata_warning = f"Could not read broadcast metadata; using broadcast ID filename: {exc}"
+            console.print(f"  [yellow]{metadata_warning}[/yellow]")
+    if naming is not None:
+        stem = format_output_stem(metadata.timestamp if metadata else None, broadcast_id, naming)
+        final_video_path = output_dir / f"{stem}.mp4"
+        final_sidecar_path = output_dir / f"{stem}.rotation.jsonl"
+        output_template = str(output_dir / "%(id)s.%(ext)s")
+        if final_video_path.exists():
+            warning = "Already downloaded; existing file was not overwritten"
+            console.print(f"  [yellow]{warning}[/yellow] → {final_video_path}")
+            return DownloadResult(
+                url=normalized,
+                success=True,
+                output_file=str(final_video_path),
+                rotation_sidecar_file=str(final_sidecar_path) if final_sidecar_path.exists() else None,
+                warning=warning,
+            )
+    else:
+        final_video_path = None
+        final_sidecar_path = None
+        output_template = str(output_dir / YTDLP_OUTPUT_TEMPLATE)
 
     cmd = [
         "yt-dlp",
@@ -316,7 +379,7 @@ def download_broadcast(
         if process.returncode == 0:
             console.print(f"  [green]Video downloaded[/green]" + (f" → {output_file}" if output_file else ""))
             sidecar_file = None
-            warning = None
+            warning = metadata_warning
             if rotation_result:
                 rotation_thread.join(timeout=300)
             elif stages:
@@ -380,6 +443,17 @@ def download_broadcast(
                     w = f"Rotation correction failed: {e!r}"
                     warning = f"{warning}; {w}" if warning else w
                     console.print(f"  [yellow]{w}[/yellow]")
+            if naming is not None:
+                staging_video = Path(output_file) if output_file else output_dir / f"{broadcast_id}.mp4"
+                if staging_video.exists() and staging_video != final_video_path:
+                    staging_video.rename(final_video_path)
+                if sidecar_file:
+                    staging_sidecar = Path(sidecar_file)
+                    if staging_sidecar.exists() and staging_sidecar != final_sidecar_path:
+                        staging_sidecar.rename(final_sidecar_path)
+                    sidecar_file = str(final_sidecar_path)
+                output_file = str(final_video_path)
+                console.print(f"  [green]Named artifacts[/green] → {final_video_path.name}")
             return DownloadResult(
                 url=normalized,
                 success=True,

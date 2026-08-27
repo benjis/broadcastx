@@ -4,7 +4,7 @@ import re
 import string
 import tomllib
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -112,6 +112,20 @@ def normalize_username(username: str) -> str:
 
 def user_output_dir(output_root: Path, username: str) -> Path:
     return Path(output_root) / normalize_username(username)
+
+
+def format_output_stem(timestamp: int | float | None, broadcast_id: str, config: DownloadConfig) -> str:
+    """Format the shared video/sidecar stem from broadcast metadata."""
+    if timestamp is None:
+        return broadcast_id
+    local = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(ZoneInfo(config.timezone))
+    rendered = config.filename_template.format(
+        datetime=local.strftime(config.datetime_format),
+        broadcast_id=broadcast_id,
+    )
+    if not rendered or rendered in {".", ".."} or "/" in rendered or "\\" in rendered:
+        raise ConfigError("Filename settings produced a path instead of a file name")
+    return rendered
 
 
 def discover_config_path(explicit: Path | str | None = None, cwd: Path | None = None) -> Path | None:

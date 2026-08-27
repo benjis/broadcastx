@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from broadcastx.config import ConfigError, load_config
+from broadcastx.config import ConfigError, DownloadConfig, format_output_stem, load_config
 
 
 def test_load_config_discovers_users_and_resolves_relative_output(tmp_path, monkeypatch):
@@ -70,3 +70,15 @@ def test_invalid_config_fails_before_runtime(tmp_path, body, message):
 
     with pytest.raises(ConfigError, match=message):
         load_config(path)
+
+
+def test_format_output_stem_converts_utc_metadata_to_user_timezone():
+    settings = DownloadConfig(timezone="Australia/Sydney")
+
+    stem = format_output_stem(1787918400, "1vAxRkBbDRzKl", settings)
+
+    assert stem == "2026-08-28_22-00-00_1vAxRkBbDRzKl"
+
+
+def test_format_output_stem_falls_back_to_broadcast_id_without_timestamp():
+    assert format_output_stem(None, "1vAxRkBbDRzKl", DownloadConfig()) == "1vAxRkBbDRzKl"

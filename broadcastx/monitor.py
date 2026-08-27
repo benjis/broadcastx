@@ -253,6 +253,7 @@ async def _background_download(
     output_path: Path,
     username: str,
     broadcast_id: str,
+    app_config: AppConfig | None = None,
 ) -> None:
     """Download a broadcast in a background thread; log the result event."""
     try:
@@ -261,6 +262,7 @@ async def _background_download(
             # Stages mode: monitor logs share this terminal, so the
             # background download must never write \r progress lines.
             progress="stages",
+            naming=app_config.download_for(username) if app_config else None,
         )
         _append_event(output_path, {
             "type": "download_finished",
@@ -461,6 +463,7 @@ async def monitor_users(
                                     event_paths[username],
                                     username,
                                     candidate.broadcast_id,
+                                    app_config,
                                 )
                             )
                             task.add_done_callback(lambda t, u=username: _log_background_download_error(u, t))
