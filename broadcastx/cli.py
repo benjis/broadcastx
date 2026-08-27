@@ -138,12 +138,13 @@ def monitor(usernames, config_file, check_interval, live_interval, output, outpu
 
 @main.command()
 @click.argument("urls", nargs=-1)
+@click.option("--config", "config_file", type=click.Path(dir_okay=False), default=None, help="Config file (default: ./broadcastx.toml when present)")
 @click.option("--from", "from_file", default=None, type=click.Path(), help="Load URLs from a JSON file")
-@click.option("--output-dir", "-o", default=None, help="Output directory for videos")
+@click.option("--output-dir", "-o", default=None, help="Output root containing per-user directories")
 @click.option("--browser", "-b", default=DEFAULT_BROWSER, help=f"Browser for cookies (default: {DEFAULT_BROWSER})")
 @click.option("--verbose", "-v", is_flag=True, help="Show yt-dlp output")
 @click.option("--parallel", "-p", default=1, help="Number of concurrent downloads (default: 1)")
-def download(urls, from_file, output_dir, browser, verbose, parallel):
+def download(urls, config_file, from_file, output_dir, browser, verbose, parallel):
     """Download broadcast video(s).
 
     Pass one or more broadcast URLs directly, or use --from to load from a JSON file.
@@ -169,15 +170,18 @@ def download(urls, from_file, output_dir, browser, verbose, parallel):
         console.print("[yellow]Provide URLs or use --from <file>.[/yellow]")
         raise SystemExit(1)
 
-    out = Path(output_dir) if output_dir else DEFAULT_VIDEOS_DIR
+    config = _load_cli_config(config_file)
+    if output_dir:
+        config = replace(config, output_root=Path(output_dir).expanduser().resolve())
 
     results = download_all(
         urls=list(urls),
         from_file=from_file,
-        output_dir=out,
+        output_dir=None,
         browser=browser,
         verbose=verbose,
         parallel=parallel,
+        app_config=config,
     )
 
     # Exit with error code if any downloads failed

@@ -25,6 +25,8 @@ from pathlib import Path
 from rich.console import Console
 
 from .config import (
+    AppConfig,
+    ConfigError,
     DEFAULT_BROWSER,
     DEFAULT_VIDEOS_DIR,
     DownloadConfig,
@@ -33,6 +35,8 @@ from .config import (
     format_output_stem,
     is_broadcast_url,
     normalize_broadcast_url,
+    normalize_username,
+    user_output_dir,
 )
 from .rotation import extract_rotation_sidecar
 from .rotation import rotate_video as _apply_rotation
@@ -50,6 +54,7 @@ class DownloadResult:
     rotation_applied: bool = False
     error: str | None = None
     warning: str | None = None
+    username: str | None = None
 
 
 @dataclass(frozen=True)
@@ -201,12 +206,14 @@ def check_ffmpeg() -> bool:
 
 def download_broadcast(
     url: str,
-    output_dir: Path = DEFAULT_VIDEOS_DIR,
+    output_dir: Path | None = None,
     browser: str = DEFAULT_BROWSER,
     verbose: bool = False,
     progress: str = "inplace",
     naming: DownloadConfig | None = None,
     metadata: BroadcastMetadata | None = None,
+    app_config: AppConfig | None = None,
+    username: str | None = None,
 ) -> DownloadResult:
     """
     Download a single broadcast video using yt-dlp.
@@ -248,18 +255,32 @@ def download_broadcast(
             error=f"Not a valid broadcast URL: {url}",
         )
 
-    broadcast_id = extract_broadcast_id(url)
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     metadata_warning = None
-    if naming is not None and metadata is None:
+    if (naming is not None or app_config is not None) and metadata is None:
         try:
             metadata = probe_broadcast_metadata(normalized, browser)
         except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
             metadata = BroadcastMetadata()
             metadata_warning = f"Could not read broadcast metadata; using broadcast ID filename: {exc}"
             console.print(f"  [yellow]{metadata_warning}[/yellow]")
+
+    resolved_username = None
+    if username:
+        resolved_username = normalize_username(username)
+    elif app_config is not None and metadata and metadata.uploader_id:
+        try:
+            resolved_username = normalize_username(metadata.uploader_id)
+        except ConfigError:
+            resolved_username = None
+    if app_config is not None:
+        resolved_username = resolved_username or "unknown"
+        naming = app_config.download_for(resolved_username)
+        output_dir = Path(output_dir) if output_dir is not None else user_output_dir(app_config.output_root, resolved_username) / "videos"
+    else:
+        output_dir = Path(output_dir) if output_dir is not None else DEFAULT_VIDEOS_DIR
+
+    broadcast_id = extract_broadcast_id(url)
+    output_dir.mkdir(parents=True, exist_ok=True)
     if naming is not None:
         stem = format_output_stem(metadata.timestamp if metadata else None, broadcast_id, naming)
         final_video_path = output_dir / f"{stem}.mp4"
@@ -274,6 +295,7 @@ def download_broadcast(
                 output_file=str(final_video_path),
                 rotation_sidecar_file=str(final_sidecar_path) if final_sidecar_path.exists() else None,
                 warning=warning,
+                username=resolved_username,
             )
     else:
         final_video_path = None
@@ -461,6 +483,7 @@ def download_broadcast(
                 rotation_sidecar_file=sidecar_file,
                 rotation_applied=rotation_applied,
                 warning=warning,
+                username=resolved_username,
             )
         else:
             # Extract error from output
@@ -481,10 +504,11 @@ def download_broadcast(
 def download_all(
     urls: list[str] | None = None,
     from_file: Path | str | None = None,
-    output_dir: Path = DEFAULT_VIDEOS_DIR,
+    output_dir: Path | None = None,
     browser: str = DEFAULT_BROWSER,
     verbose: bool = False,
     parallel: int = 1,
+    app_config: AppConfig | None = None,
 ) -> list[DownloadResult]:
     """
     Download multiple broadcast videos.
@@ -528,7 +552,7 @@ def download_all(
         results = []
         for i, url in enumerate(unique_urls, 1):
             console.print(f"[bold][{i}/{total}][/bold] {url}")
-            result = download_broadcast(url, output_dir=output_dir, browser=browser, verbose=verbose)
+            result = download_broadcast(url, output_dir=output_dir, browser=browser, verbose=verbose, app_config=app_config)
             results.append(result)
             if result.success:
                 console.print(f"  [green]✓ Done[/green]" + (f" → {result.output_file}" if result.output_file else ""))
@@ -542,7 +566,7 @@ def download_all(
         completed_count = 0
 
         def _download_one(index: int, url: str) -> tuple[int, DownloadResult]:
-            return index, download_broadcast(url, output_dir=output_dir, browser=browser, verbose=verbose)
+            return index, download_broadcast(url, output_dir=output_dir, browser=browser, verbose=verbose, app_config=app_config)
 
         with ThreadPoolExecutor(max_workers=parallel) as executor:
             futures = {

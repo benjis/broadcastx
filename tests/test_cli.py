@@ -84,6 +84,29 @@ timezone = "Asia/Ho_Chi_Minh"
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Provide USERNAMES", result.output)
 
+    def test_download_automatically_loads_user_configuration(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("broadcastx.toml").write_text(
+                """
+[[users]]
+username = "Alice"
+timezone = "Australia/Sydney"
+""".strip()
+            )
+            with (
+                patch("broadcastx.cli._require_dependencies"),
+                patch("broadcastx.cli.download_all", return_value=[]) as download_all,
+            ):
+                result = runner.invoke(
+                    main,
+                    ["download", "https://x.com/i/broadcasts/1vAxRkBbDRzKl"],
+                )
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        config = download_all.call_args.kwargs["app_config"]
+        self.assertEqual(config.download_for("alice").timezone, "Australia/Sydney")
+
 
 if __name__ == "__main__":
     unittest.main()

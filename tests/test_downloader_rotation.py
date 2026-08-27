@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from broadcastx import downloader
-from broadcastx.config import DownloadConfig
+from broadcastx.config import AppConfig, DownloadConfig, UserConfig
 from broadcastx.downloader import BroadcastMetadata, download_broadcast
 from broadcastx.rotation import ID3RotationSample, load_sidecar, rotation_timeline, rotate_video
 
@@ -27,6 +27,43 @@ class _FakeProcess:
 
 
 class DownloaderRotationTests(unittest.TestCase):
+    def test_app_config_routes_url_metadata_to_user_directory_and_overrides(self):
+        url = "https://x.com/i/broadcasts/1vAxRkBbDRzKl"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "output"
+            output_dir = root / "alice" / "videos"
+            output_dir.mkdir(parents=True)
+            staging_video = output_dir / "1vAxRkBbDRzKl.mp4"
+            staging_sidecar = output_dir / "1vAxRkBbDRzKl.rotation.jsonl"
+            staging_video.write_text("fake video")
+            staging_sidecar.write_text("{}\n")
+            config = AppConfig(
+                output_root=root,
+                users=(UserConfig(username="alice", timezone="Australia/Sydney"),),
+            )
+
+            class _NamedProcess:
+                stdout = iter([f"[download] Destination: {staging_video}\n"])
+                returncode = 0
+
+                def wait(self):
+                    return None
+
+            with (
+                patch("broadcastx.downloader.subprocess.Popen", return_value=_NamedProcess()),
+                patch("broadcastx.downloader.extract_rotation_sidecar", return_value=staging_sidecar),
+                patch("broadcastx.downloader._apply_rotation"),
+            ):
+                result = download_broadcast(
+                    url,
+                    app_config=config,
+                    metadata=BroadcastMetadata(uploader_id="Alice", timestamp=1787918400),
+                )
+
+            self.assertEqual(result.username, "alice")
+            self.assertEqual(Path(result.output_file).parent, output_dir)
+            self.assertEqual(Path(result.output_file).name, "2026-08-28_22-00-00_1vAxRkBbDRzKl.mp4")
+
     def test_configured_naming_keeps_video_and_sidecar_stems_aligned(self):
         url = "https://x.com/i/broadcasts/1vAxRkBbDRzKl"
         with tempfile.TemporaryDirectory() as tmp:
