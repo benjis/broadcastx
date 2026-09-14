@@ -239,6 +239,125 @@ def _append_event(path: Path, event: dict) -> None:
 
     path.write_text(json.dumps(events, indent=2, ensure_ascii=False))
 
+
+def _log_check_failure(path: Path, username: str, operation: str, url: str, error: Exception) -> None:
+    failed_at = _now_iso()
+    console.print(
+        f"{failed_at} @{username} {operation} failed for {url}: {error}. "
+        "Skipping this check; will check again next round.",
+        style="yellow", markup=False,
+    )
+    _append_event(path, {
+        "type": "check_failed",
+        "username": username,
+        "operation": operation,
+        "url": url,
+        "error": str(error),
+        "failed_at": failed_at,
+    })
+
+
+CHECK_RETRY_DELAYS = (5, 15)
+
+
+class _MonitorBrowser:
+    """Own the browser lifecycle without owning live/download state."""
+
+    def __init__(self, playwright, profile_dir: Path, headless: bool):
+        self.playwright = playwright
+        self.profile_dir = profile_dir
+        self.headless = headless
+        self.context = None
+        self.page = None
+        self.page_replaced = False
+
+    async def open(self):
+        self.context = await self.playwright.chromium.launch_persistent_context(
+            user_data_dir=str(self.profile_dir), channel="chrome", headless=self.headless,
+            viewport={"width": 1280, "height": 900},
+            args=["--disable-blink-features=AutomationControlled"],
+        )
+        self.page = self.context.pages[0] if self.context.pages else await self.context.new_page()
+        if not await _ensure_logged_in(self.context, self.page, self.headless):
+            raise SystemExit(1)
+
+    async def close(self):
+        from playwright.async_api import Error
+
+        self.page = None
+        if self.context is not None:
+            context, self.context = self.context, None
+            try:
+                await context.close()
+            except Error:
+                # A disconnected browser may already be closed.
+                pass
+
+    async def recover(self, path: Path, username: str):
+        from playwright.async_api import Error
+
+        action = "browser_restarted" if self.page_replaced or self.context is None else "page_replaced"
+        try:
+            if action == "page_replaced":
+                self.page_replaced = True
+                old_page, self.page = self.page, None
+                if old_page is not None:
+                    try:
+                        await old_page.close()
+                    except Error:
+                        pass
+                self.page = await self.context.new_page()
+            else:
+                await self.close()
+                await self.open()
+                self.page_replaced = False
+        except Error as error:
+            # Retry recovery on the next check, rather than exiting the monitor.
+            self.page_replaced = True
+            self.page = None
+            action = "browser_recovery_failed"
+            detail = str(error)
+        else:
+            detail = action
+        timestamp = _now_iso()
+        console.print(f"{timestamp} @{username} {detail}", style="yellow", markup=False)
+        _append_event(path, {
+            "type": action, "username": username, "occurred_at": timestamp, "detail": detail,
+        })
+
+    async def check(self, callback, target: str, path: Path, username: str, operation: str, url: str):
+        import random
+        from playwright.async_api import Error
+
+        for attempt in range(len(CHECK_RETRY_DELAYS) + 1):
+            try:
+                if self.page is None:
+                    await self.close()
+                    await self.open()
+                result = await callback(self.page, target)
+            except Error as error:
+                if attempt < len(CHECK_RETRY_DELAYS):
+                    delay = CHECK_RETRY_DELAYS[attempt] + random.uniform(0, 1)
+                    timestamp = _now_iso()
+                    console.print(
+                        f"{timestamp} @{username} {operation} attempt {attempt + 1} failed: "
+                        f"{error}; retrying in {delay:.1f}s", style="yellow", markup=False,
+                    )
+                    _append_event(path, {
+                        "type": "check_retry", "username": username, "operation": operation,
+                        "url": url, "error": str(error), "attempt": attempt + 1,
+                        "retry_delay": delay, "failed_at": timestamp,
+                    })
+                    await asyncio.sleep(delay)
+                    continue
+                _log_check_failure(path, username, operation, url, error)
+                await self.recover(path, username)
+                return None
+            else:
+                self.page_replaced = False
+                return result
+
+
 def _log_background_download_error(username: str, task):
     """Log any unhandled exception from a background download task."""
     try:
@@ -392,35 +511,39 @@ async def monitor_users(
     console.print(f"  [dim]Check interval: {check_interval}s | live interval: {live_interval}s[/dim]")
 
     async with async_playwright() as p:
-        context = await p.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            channel="chrome",
-            headless=headless,
-            viewport={"width": 1280, "height": 900},
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-        page = context.pages[0] if context.pages else await context.new_page()
-
+        monitor_browser = _MonitorBrowser(p, profile_dir, headless)
         try:
-            if not await _ensure_logged_in(context, page, headless):
-                raise SystemExit(1)
+            await monitor_browser.open()
 
             while True:
                 console.print(f"[dim]{_now_iso()} checking {len(usernames)} user(s)...[/dim]")
+                checks_failed = False
 
                 for username in usernames:
                     if username in live_candidates:
                         continue
 
                     console.print(f"  [dim]Checking @{username}...[/dim]")
-                    candidates = await _collect_profile_candidates(page, username)
+                    candidates = await monitor_browser.check(
+                        _collect_profile_candidates, username, event_paths[username], username,
+                        "profile_check", f"https://x.com/{username}",
+                    )
+                    if candidates is None:
+                        checks_failed = True
+                        continue
 
                     for candidate in candidates:
                         if candidate.broadcast_id in seen_completed:
                             continue
                         if _state_bucket(candidate.state) == "ended":
                             continue
-                        status = await _check_broadcast_status(page, candidate.url)
+                        status = await monitor_browser.check(
+                            _check_broadcast_status, candidate.url, event_paths[username], username,
+                            "broadcast_check", candidate.url,
+                        )
+                        if status is None:
+                            checks_failed = True
+                            continue
                         if _is_live_candidate_status(status.state):
                             live_candidates[username] = candidate
                             console.print(f"  [green]Live found for @{username}:[/green] {candidate.url}")
@@ -435,7 +558,10 @@ async def monitor_users(
                             break
 
                 if not live_candidates:
-                    console.print("  [dim]No active broadcasts found.[/dim]")
+                    if checks_failed:
+                        console.print("  [yellow]Some checks failed; no live broadcasts confirmed this round.[/yellow]")
+                    else:
+                        console.print("  [dim]No active broadcasts found.[/dim]")
                     if once:
                         break
                     await asyncio.sleep(check_interval)
@@ -443,7 +569,13 @@ async def monitor_users(
 
                 for username in list(live_candidates.keys()):
                     candidate = live_candidates[username]
-                    status = await _check_broadcast_status(page, candidate.url)
+                    status = await monitor_browser.check(
+                        _check_broadcast_status, candidate.url, event_paths[username], username,
+                        "broadcast_check", candidate.url,
+                    )
+                    if status is None:
+                        # Keep the known live candidate until an ended status is confirmed.
+                        continue
                     console.print(f"  [dim]@{username} {candidate.broadcast_id}: {status.state}[/dim]")
 
                     if status.is_ended:
@@ -477,4 +609,4 @@ async def monitor_users(
                 else:
                     await asyncio.sleep(check_interval)
         finally:
-            await context.close()
+            await monitor_browser.close()
