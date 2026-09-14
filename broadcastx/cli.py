@@ -148,19 +148,22 @@ def monitor(usernames, config_file, check_interval, live_interval, output, outpu
 @click.option("--verbose", "-v", is_flag=True, help="Show yt-dlp output")
 @click.option("--parallel", "-p", default=1, help="Number of concurrent downloads (default: 1)")
 def download(urls, config_file, from_file, output_dir, browser, verbose, parallel):
-    """Download broadcast video(s).
+    """Download Broadcast and X/Twitter post videos.
 
-    Pass one or more broadcast URLs directly, or use --from to load from a JSON file.
+    Pass Broadcast or X/Twitter status URLs, or use --from for a JSON file.
+    All videos in each post are downloaded. Mixed link types are supported.
 
     Examples:
 
         broadcastx download https://x.com/i/broadcasts/1vAxRkBbDRzKl
 
+        broadcastx download https://x.com/username/status/1234567890123456789
+
         broadcastx download --from output/broadcasts.json
 
         broadcastx download --from output/broadcasts.json -o ./my_videos
 
-    Rotation correction is applied automatically: if the broadcast carries
+    Rotation correction applies to Broadcast downloads only: if the broadcast carries
     phone-orientation metadata, the downloaded video is re-encoded so it
     displays upright. A `.rotation.jsonl` sidecar is also written alongside
     the video for inspection.

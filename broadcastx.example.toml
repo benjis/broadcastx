@@ -21,6 +21,7 @@ headless = false
 timezone = "UTC"
 datetime_format = "%Y-%m-%d_%H-%M-%S"
 filename_template = "{datetime}_{broadcast_id}"
+video_filename_template = "{datetime}_{tweet_id}_{media_id}"
 
 [[users]]
 username = "A"

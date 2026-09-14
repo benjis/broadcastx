@@ -80,6 +80,7 @@ download = true
 timezone = "UTC"
 datetime_format = "%Y-%m-%d_%H-%M-%S"
 filename_template = "{datetime}_{broadcast_id}"
+video_filename_template = "{datetime}_{tweet_id}_{media_id}"
 
 [[users]]
 username = "Alice"
@@ -111,11 +112,17 @@ broadcastx scan @username
 
 The scanner opens the user's X profile in Chrome, scrolls through the timeline, and intercepts API responses. Broadcast URLs are extracted from tweet cards. If you are not logged in, the browser shows the login page — log in manually, then press Enter in the terminal to continue. Your session is saved to `~/.broadcastx/chrome-profile/` for future runs.
 
-### Download broadcasts
+### Download broadcasts and post videos
 
 ```bash
 # Single broadcast
 broadcastx download https://x.com/i/broadcasts/1vAxRkBbDRzKl
+
+# Ordinary post: download every video (also accepts twitter.com links)
+broadcastx download https://x.com/username/status/1234567890123456789
+
+# Mix broadcasts and ordinary posts
+broadcastx download https://x.com/i/broadcasts/1vAxRkBbDRzKl https://x.com/username/status/1234567890123456789
 
 # From scan results; the scanner username is preserved for routing
 broadcastx download --from output/username/broadcasts.json
@@ -139,6 +146,21 @@ For a direct URL, BroadcastX reads yt-dlp's uploader ID and broadcast timestamp,
 then selects the matching user config and output directory automatically. If
 the user cannot be identified, it uses global settings and
 `output/unknown/videos/`.
+
+Ordinary post videos use `video_filename_template`, globally or in `[[users]]`.
+It accepts `{datetime}`, `{tweet_id}`, and `{media_id}`; both IDs are required.
+The existing timezone and datetime format settings apply. Missing timestamps
+fall back to `<tweet_id>_<media_id>`; missing media IDs use stable media indices.
+Videos are saved under `<output_root>/<user>/videos/` and existing files are
+skipped without overwriting. Post `/video/N` links download the entire post.
+
+`--from` also accepts mixed URL arrays or arrays of `{"url": "..."}` objects.
+Invalid links, posts without native video, and permission errors are reported
+as failures. Other downloads continue, and any failure yields a nonzero exit
+code; successfully downloaded videos are retained. External video site links
+are not followed. Broadcast rotation correction remains unchanged; ordinary
+post downloads do not create rotation sidecars. Scan and monitor still
+discover Broadcast links only.
 
 ### Monitor profiles for live broadcasts
 

@@ -6,6 +6,7 @@ import tomllib
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Default output directory (relative to cwd)
@@ -49,6 +50,7 @@ class DownloadConfig:
     timezone: str = "UTC"
     datetime_format: str = DEFAULT_DATETIME_FORMAT
     filename_template: str = DEFAULT_FILENAME_TEMPLATE
+    video_filename_template: str = "{datetime}_{tweet_id}_{media_id}"
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,7 @@ class UserConfig:
     timezone: str | None = None
     datetime_format: str | None = None
     filename_template: str | None = None
+    video_filename_template: str | None = None
 
 
 @dataclass(frozen=True)
@@ -97,6 +100,7 @@ class AppConfig:
             timezone=user.timezone or self.download.timezone,
             datetime_format=user.datetime_format or self.download.datetime_format,
             filename_template=user.filename_template or self.download.filename_template,
+            video_filename_template=user.video_filename_template if user.video_filename_template is not None else self.download.video_filename_template,
         )
         _validate_download_config(resolved, f"user @{user.username}")
         return resolved
@@ -130,6 +134,58 @@ def format_output_stem(timestamp: int | float | None, broadcast_id: str, config:
     return rendered
 
 
+def normalize_tweet_url(url: str) -> str | None:
+    """Identify a single X post, ignoring share parameters and media selection."""
+    if not isinstance(url, str):
+        return None
+    try:
+        parsed = urlsplit(url.strip())
+        if parsed.scheme not in {"http", "https"} or parsed.netloc.lower() not in {
+            f"{prefix}{host}" for prefix in ("", "www.", "m.", "mobile.")
+            for host in ("x.com", "twitter.com")
+        }:
+            return None
+    except ValueError:
+        return None
+    match = re.fullmatch(r"/(?:[A-Za-z0-9_]{1,15}|i/web)/status/([1-9][0-9]*)(?:/video/[1-9][0-9]*)?/?", parsed.path)
+    return f"https://x.com/i/web/status/{match.group(1)}" if match else None
+
+
+def format_video_stem(timestamp: int | float | None, tweet_id: str, media_id: str, config: DownloadConfig) -> str:
+    if timestamp is None:
+        rendered = f"{tweet_id}_{media_id}"
+    else:
+        local = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(ZoneInfo(config.timezone))
+        rendered = config.video_filename_template.format(
+            datetime=local.strftime(config.datetime_format), tweet_id=tweet_id, media_id=media_id,
+        )
+    if not rendered or rendered in {".", ".."} or any(c in rendered for c in ("/", "\\", "\0")):
+        raise ConfigError("Video filename settings must produce a file name, not a path")
+    return rendered
+
+
+def _validate_video_template(config: DownloadConfig, label: str) -> None:
+    template = config.video_filename_template
+    if not isinstance(template, str):
+        raise ConfigError(f"{label} video_filename_template must be a string")
+    try:
+        fields = set()
+        for _, field, spec, conversion in string.Formatter().parse(template):
+            if field is not None:
+                fields.add(field)
+            if spec or conversion:
+                raise ConfigError(f"{label} video_filename_template does not allow format specs or conversions")
+        if fields - {"datetime", "tweet_id", "media_id"}:
+            raise ConfigError(f"{label} video_filename_template has unknown filename fields")
+        if not {"tweet_id", "media_id"} <= fields:
+            raise ConfigError(f"{label} video_filename_template must include {{tweet_id}} and {{media_id}}")
+        sample = template.format(datetime="2026-08-28", tweet_id="123", media_id="456")
+        if any(c in sample for c in ("/", "\\", "\0")):
+            raise ConfigError(f"{label} video_filename_template must produce a file name, not a path")
+    except ValueError as exc:
+        raise ConfigError(f"Invalid video_filename_template for {label}: {exc}") from exc
+
+
 def discover_config_path(explicit: Path | str | None = None, cwd: Path | None = None) -> Path | None:
     """Resolve an explicit config, otherwise discover ./broadcastx.toml."""
     if explicit is not None:
@@ -155,6 +211,7 @@ def _only_keys(table: dict, allowed: set[str], label: str) -> None:
 
 
 def _validate_download_config(config: DownloadConfig, label: str = "[download]") -> None:
+    _validate_video_template(config, label)
     for field_name in ("timezone", "datetime_format", "filename_template"):
         if not isinstance(getattr(config, field_name), str):
             raise ConfigError(f"{label} {field_name} must be a string")
@@ -206,7 +263,7 @@ def load_config(explicit: Path | str | None = None, cwd: Path | None = None) -> 
     download_data = _table(data, "download")
     scan_data = _table(data, "scan")
     _only_keys(monitor_data, {"check_interval_seconds", "live_interval_seconds", "browser", "headless", "download"}, "[monitor]")
-    _only_keys(download_data, {"timezone", "datetime_format", "filename_template"}, "[download]")
+    _only_keys(download_data, {"timezone", "datetime_format", "filename_template", "video_filename_template"}, "[download]")
     _only_keys(scan_data, {"max_scrolls", "scroll_delay_seconds", "idle_timeout_seconds", "headless"}, "[scan]")
 
     monitor = MonitorConfig(**monitor_data)
@@ -246,7 +303,7 @@ def load_config(explicit: Path | str | None = None, cwd: Path | None = None) -> 
     for index, raw in enumerate(raw_users, 1):
         if not isinstance(raw, dict):
             raise ConfigError(f"[[users]] entry {index} must be a table")
-        _only_keys(raw, {"username", "timezone", "datetime_format", "filename_template"}, f"[[users]] entry {index}")
+        _only_keys(raw, {"username", "timezone", "datetime_format", "filename_template", "video_filename_template"}, f"[[users]] entry {index}")
         if "username" not in raw:
             raise ConfigError(f"[[users]] entry {index} is missing username")
         user = UserConfig(username=normalize_username(raw["username"]), **{k: v for k, v in raw.items() if k != "username"})

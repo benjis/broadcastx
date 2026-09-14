@@ -17,10 +17,13 @@ import shutil
 import subprocess
 import threading
 import time
+import tempfile
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from rich.console import Console
 
@@ -36,6 +39,8 @@ from .config import (
     is_broadcast_url,
     normalize_broadcast_url,
     normalize_username,
+    normalize_tweet_url,
+    format_video_stem,
     user_output_dir,
 )
 from .rotation import extract_rotation_sidecar
@@ -46,7 +51,7 @@ console = Console()
 
 @dataclass
 class DownloadResult:
-    """Result of a single broadcast download attempt."""
+    """Result of one input link, including any successfully downloaded media."""
     url: str
     success: bool
     output_file: str | None = None
@@ -55,6 +60,7 @@ class DownloadResult:
     error: str | None = None
     warning: str | None = None
     username: str | None = None
+    output_files: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -516,6 +522,147 @@ def download_broadcast(
         )
 
 
+def _normalize_download_url(url) -> str | None:
+    if not isinstance(url, str):
+        return None
+    try:
+        parsed = urlsplit(url.strip())
+        if parsed.scheme in {"http", "https"} and parsed.netloc.lower() in {"x.com", "twitter.com", "pscp.tv", "www.pscp.tv"}:
+            if re.fullmatch(r"/(?:i/broadcasts|w)/[A-Za-z0-9]{8,}/?", parsed.path):
+                if broadcast := normalize_broadcast_url(url):
+                    return broadcast
+    except ValueError:
+        return None
+    return normalize_tweet_url(url)
+
+
+def download_video(
+    url: str,
+    output_dir: Path | None = None,
+    browser: str = DEFAULT_BROWSER,
+    verbose: bool = False,
+    *,
+    app_config: AppConfig | None = None,
+    username: str | None = None,
+) -> DownloadResult:
+    """Download a broadcast or all native video media in one X post."""
+    normalized = _normalize_download_url(url)
+    if not normalized:
+        return DownloadResult(url=url, success=False, error=f"Unsupported video URL: {url}")
+    if normalize_broadcast_url(normalized):
+        try:
+            return download_broadcast(normalized, output_dir=output_dir, browser=browser,
+                                      verbose=verbose, app_config=app_config, username=username)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return DownloadResult(url=normalized, success=False, error=str(exc))
+    return _download_tweet(normalized, output_dir, browser, verbose, app_config)
+
+
+def _download_tweet(
+    url: str,
+    output_dir: Path | None,
+    browser: str,
+    verbose: bool,
+    app_config: AppConfig | None,
+) -> DownloadResult:
+    tweet_id = url.rsplit("/", 1)[-1]
+    files, errors, warnings = [], [], []
+    owner = None
+    try:
+        probe = subprocess.run(
+            ["yt-dlp", "--cookies-from-browser", browser, "--dump-single-json",
+             "--skip-download", "--no-warnings", "--yes-playlist",
+             "--use-extractors", "Twitter", url],
+            check=True, capture_output=True, text=True,
+        )
+        payload = json.loads(probe.stdout)
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid tweet metadata")
+        entries = payload.get("entries") if payload.get("_type") in {"playlist", "multi_video"} else [payload]
+        if not isinstance(entries, list) or not entries:
+            raise ValueError("No native video found in this tweet")
+        config = app_config or AppConfig()
+        for index, entry in enumerate(entries, 1):
+            try:
+                if not isinstance(entry, dict) or entry.get("_type", "video") != "video" or not entry.get("formats"):
+                    raise ValueError("No native video formats; external links are not supported")
+                extractor = entry.get("extractor_key") or entry.get("extractor") or payload.get("extractor_key") or payload.get("extractor")
+                if extractor and extractor.lower() != "twitter":
+                    raise ValueError("External video extractors are not supported")
+                raw_owner = entry.get("uploader_id") or payload.get("uploader_id")
+                try:
+                    media_owner = normalize_username(raw_owner)
+                except ConfigError:
+                    media_owner = "unknown"
+                    warnings.append("No usable uploader ID; routing to unknown")
+                owner = owner or media_owner
+                naming = config.download_for(media_owner)
+                timestamp = entry.get("timestamp", payload.get("timestamp"))
+                if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp):
+                    timestamp = None
+                    warnings.append("No timestamp; using tweet and media IDs")
+                media_id = str(entry.get("id") or index)
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", media_id):
+                    raise ValueError("Invalid media ID")
+                directory = Path(output_dir) if output_dir is not None else user_output_dir(config.output_root, media_owner) / "videos"
+                directory.mkdir(parents=True, exist_ok=True)
+                target = directory / (format_video_stem(timestamp, tweet_id, media_id, naming) + ".mp4")
+                if target.exists():
+                    files.append(str(target))
+                    warnings.append("Already downloaded; existing file was not overwritten")
+                    continue
+                with tempfile.TemporaryDirectory(prefix=".tweet-", dir=directory) as work:
+                    info = Path(work) / "media.info.json"
+                    info.write_text(json.dumps(entry), encoding="utf-8")
+                    cmd = ["yt-dlp", "--cookies-from-browser", browser,
+                           "--load-info-json", str(info), "-f", "bestvideo+bestaudio/best",
+                           "--output", str(Path(work) / "media.%(ext)s"),
+                           "--merge-output-format", "mp4", "--remux-video", "mp4",
+                           "--no-warnings", "--newline", "--no-overwrites", "--no-simulate",
+                           "--print", 'after_move:BX_FILE:%(filepath)j']
+                    if verbose:
+                        console.print(f"  [dim]$ {' '.join(cmd)}[/dim]")
+                    final_path = None
+                    tail = []
+                    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                    try:
+                        for line in process.stdout:
+                            line = line.rstrip()
+                            tail = (tail + [line])[-3:]
+                            if line.startswith("BX_FILE:"):
+                                final_path = Path(json.loads(line[len("BX_FILE:"):]))
+                            elif verbose or "[download]" in line or "[Merger]" in line:
+                                console.print(f"    [dim]{line}[/dim]")
+                        process.wait()
+                    finally:
+                        if process.poll() is None:
+                            process.terminate()
+                            process.wait()
+                        process.stdout.close()
+                    if process.returncode:
+                        raise ValueError("\n".join(tail) or f"yt-dlp exited with code {process.returncode}")
+                    if final_path is None or not final_path.is_file() or final_path.resolve().parent != Path(work).resolve():
+                        raise ValueError("yt-dlp did not report a valid final video file")
+                    # Atomic creation prevents a concurrent invocation overwriting a target.
+                    try:
+                        target.hardlink_to(final_path)
+                    except FileExistsError:
+                        warnings.append("Already downloaded; existing file was not overwritten")
+                    files.append(str(target))
+                    console.print(f"  [green]Video downloaded[/green] → {target}")
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                errors.append(f"Media {index}: {exc}")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
+        errors.append(detail)
+    warning = "; ".join(dict.fromkeys(warnings)) or None
+    if warning:
+        console.print(f"  [yellow]{warning}[/yellow]")
+    return DownloadResult(url=url, success=bool(files) and not errors,
+                          output_file=files[0] if files else None, output_files=files,
+                          error="; ".join(errors) or None, warning=warning, username=owner)
+
+
 def download_all(
     urls: list[str] | None = None,
     from_file: Path | str | None = None,
@@ -526,11 +673,11 @@ def download_all(
     app_config: AppConfig | None = None,
 ) -> list[DownloadResult]:
     """
-    Download multiple broadcast videos.
+    Download Broadcast and ordinary X post videos, preserving link order.
 
     Args:
-        urls: List of broadcast URLs
-        from_file: Path to JSON file containing broadcast data
+        urls: List of Broadcast or X post URLs
+        from_file: Path to JSON file containing URLs or scanner data
         output_dir: Directory to save videos
         browser: Browser to extract cookies from
         verbose: Show yt-dlp output
@@ -541,38 +688,48 @@ def download_all(
     """
     all_urls = list(urls or [])
     username_hints: dict[str, str] = {}
+    source_error = None
 
     # Load URLs from file if provided
     if from_file:
-        file_urls, source_username = _load_download_source(Path(from_file))
+        try:
+            file_urls, source_username = _load_download_source(Path(from_file))
+        except (OSError, ValueError) as exc:
+            # Preserve direct downloads even when the additional file is unusable.
+            source_error = DownloadResult(url=str(from_file), success=False, error=str(exc))
+            file_urls, source_username = [], None
+        else:
+            source_error = None
         all_urls.extend(file_urls)
         if source_username:
             for file_url in file_urls:
-                if normalized := normalize_broadcast_url(file_url):
+                if isinstance(file_url, str) and (normalized := _normalize_download_url(file_url)) and normalize_broadcast_url(normalized):
                     username_hints[normalized] = source_username
 
     if not all_urls:
-        console.print("[yellow]No broadcast URLs to download.[/yellow]")
-        return []
+        if source_error:
+            console.print(f"[red]✗ Failed: {source_error.error}[/red]")
+        console.print("[yellow]No video URLs to download.[/yellow]")
+        return [source_error] if source_error else []
 
     # Deduplicate while preserving order
     seen = set()
     unique_urls = []
     for url in all_urls:
-        normalized = normalize_broadcast_url(url)
-        if normalized and normalized not in seen:
+        normalized = _normalize_download_url(url) or str(url)
+        if normalized not in seen:
             seen.add(normalized)
             unique_urls.append(normalized)
 
     total = len(unique_urls)
-    console.print(f"\n[bold]Downloading {total} broadcast(s)" + (f" ({parallel} parallel)" if parallel > 1 else "") + f"...[/bold]\n")
+    console.print(f"\n[bold]Downloading {total} video link(s)" + (f" ({parallel} parallel)" if parallel > 1 else "") + f"...[/bold]\n")
 
     if parallel <= 1:
         # Sequential download
         results = []
         for i, url in enumerate(unique_urls, 1):
             console.print(f"[bold][{i}/{total}][/bold] {url}")
-            result = download_broadcast(
+            result = download_video(
                 url,
                 output_dir=output_dir,
                 browser=browser,
@@ -593,7 +750,7 @@ def download_all(
         completed_count = 0
 
         def _download_one(index: int, url: str) -> tuple[int, DownloadResult]:
-            return index, download_broadcast(
+            return index, download_video(
                 url,
                 output_dir=output_dir,
                 browser=browser,
@@ -612,7 +769,7 @@ def download_all(
                 idx, result = future.result()
                 results[idx] = result
                 url = unique_urls[idx]
-                bid = extract_broadcast_id(url)
+                bid = extract_broadcast_id(url) or url.rsplit("/", 1)[-1]
 
                 with lock:
                     completed_count += 1
@@ -624,6 +781,9 @@ def download_all(
         console.print()
 
     # Summary
+    if source_error:
+        results.append(source_error)
+        console.print(f"  [red]✗ Failed: {source_error.error}[/red]")
     succeeded = sum(1 for r in results if r and r.success)
     failed = sum(1 for r in results if r and not r.success)
     console.print(f"[bold]Done:[/bold] {succeeded} succeeded, {failed} failed")
@@ -633,7 +793,7 @@ def download_all(
 
 def _load_download_source(path: Path) -> tuple[list[str], str | None]:
     """
-    Load broadcast URLs from a JSON file.
+    Load mixed video URLs from JSON, retaining scanner owner hints.
 
     Supports multiple formats:
         1. Plain list of URLs:    ["https://x.com/i/broadcasts/abc", ...]
@@ -641,14 +801,12 @@ def _load_download_source(path: Path) -> tuple[list[str], str | None]:
         3. List of objects:       [{"url": "..."}, ...]
     """
     if not path.exists():
-        console.print(f"[red]File not found: {path}[/red]")
-        return [], None
+        raise ValueError(f"File not found: {path}")
 
     try:
         data = json.loads(path.read_text())
     except json.JSONDecodeError as e:
-        console.print(f"[red]Invalid JSON in {path}: {e}[/red]")
-        return [], None
+        raise ValueError(f"Invalid JSON in {path}: {e}") from e
 
     urls = []
     username = None
@@ -659,6 +817,8 @@ def _load_download_source(path: Path) -> tuple[list[str], str | None]:
             elif isinstance(item, dict) and "url" in item:
                 urls.append(item["url"])
     elif isinstance(data, dict) and "broadcasts" in data:
+        if not isinstance(data["broadcasts"], list):
+            raise ValueError(f"Invalid broadcasts array in {path}")
         raw_username = data.get("username")
         if isinstance(raw_username, str):
             try:
@@ -671,8 +831,11 @@ def _load_download_source(path: Path) -> tuple[list[str], str | None]:
             elif isinstance(item, dict) and "url" in item:
                 urls.append(item["url"])
 
-    valid = [u for u in urls if is_broadcast_url(u)]
-    console.print(f"  [dim]Loaded {len(valid)} broadcast URL(s) from {path}[/dim]")
+    else:
+        raise ValueError(f"Unsupported download source format in {path}")
+
+    valid = urls
+    console.print(f"  [dim]Loaded {len(valid)} video URL(s) from {path}[/dim]")
     return valid, username
 
 

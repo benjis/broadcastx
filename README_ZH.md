@@ -75,6 +75,7 @@ download = true
 timezone = "UTC"
 datetime_format = "%Y-%m-%d_%H-%M-%S"
 filename_template = "{datetime}_{broadcast_id}"
+video_filename_template = "{datetime}_{tweet_id}_{media_id}"
 
 [[users]]
 username = "Alice"
@@ -105,11 +106,17 @@ broadcastx scan @username
 
 扫描器会打开用户的 X 主页，向下滚动时间线并拦截 API 响应。直播 URL 从推文卡片中提取。如果未登录，浏览器会显示登录页面——手动登录后在终端按 Enter 继续。会话信息保存在 `~/.broadcastx/chrome-profile/` 中，供后续使用。
 
-### 下载直播
+### 下载直播和普通推文视频
 
 ```bash
 # 单一直播
 broadcastx download https://x.com/i/broadcasts/1vAxRkBbDRzKl
+
+# 普通推文：下载其中全部视频，也支持 twitter.com 链接
+broadcastx download https://x.com/username/status/1234567890123456789
+
+# 混合下载直播和普通推文
+broadcastx download https://x.com/i/broadcasts/1vAxRkBbDRzKl https://x.com/username/status/1234567890123456789
 
 # 从扫描结果批量下载
 broadcastx download --from output/username/broadcasts.json
@@ -132,6 +139,17 @@ BroadcastX **自动修正手机旋转方向**：如果直播 HLS 流中包含方
 直接下载 URL 时，BroadcastX 会从 yt-dlp metadata 读取 uploader ID 和直播
 时间，自动选择对应用户的配置与输出目录。无法识别用户时使用全局配置并写入
 `output/unknown/videos/`。
+
+普通推文使用独立的 `video_filename_template`，可在 `[download]` 或
+`[[users]]` 中设置。允许 `{datetime}`、`{tweet_id}`、`{media_id}`，必须包含
+两个 ID。时区和时间格式沿用现有配置；缺少时间时使用 `<tweet_id>_<media_id>`，
+缺少媒体 ID 时使用稳定的媒体序号。文件保存在 `<output_root>/<用户>/videos/`，
+已存在文件直接跳过，不覆盖。`/video/N` 链接也会下载整条推文的全部视频。
+
+`--from` 支持混合 URL 数组或 `{"url": "..."}` 对象数组。非法链接、无原生视频、
+权限不足等情况会明确报告失败，并继续其他下载；任何失败使命令返回非零退出码，
+已成功的文件会保留。不跟随外部视频网站链接。直播旋转校正保持现有行为，
+普通推文不生成旋转侧车文件。scan 和 monitor 仍仅发现 Broadcast 链接。
 
 ### 监控直播
 
