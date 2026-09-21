@@ -6,7 +6,21 @@ from unittest.mock import AsyncMock, Mock, patch
 
 from playwright.async_api import TimeoutError
 
-from broadcastx.monitor import BroadcastCandidate, BroadcastStatus, _MonitorBrowser, monitor_users
+from broadcastx.monitor import (
+    BroadcastCandidate,
+    BroadcastStatus,
+    _MonitorBrowser,
+    _remaining_interval,
+    monitor_users,
+)
+
+
+def test_check_interval_is_measured_from_round_start():
+    assert _remaining_interval(100.0, 300, 145.0) == 255.0
+
+
+def test_overdue_check_starts_without_an_extra_interval():
+    assert _remaining_interval(100.0, 300, 405.0) == 0
 
 
 class MonitorTimeoutTests(unittest.IsolatedAsyncioTestCase):

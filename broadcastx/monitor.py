@@ -66,6 +66,11 @@ def _now_iso() -> str:
     return datetime.now().astimezone().isoformat()
 
 
+def _remaining_interval(round_started: float, interval: float, now: float) -> float:
+    """Return the delay needed to keep checks intervalled from round start."""
+    return max(0, interval - (now - round_started))
+
+
 def _state_bucket(value: str | None) -> str | None:
     if not value:
         return None
@@ -516,6 +521,7 @@ async def monitor_users(
             await monitor_browser.open()
 
             while True:
+                round_started = asyncio.get_running_loop().time()
                 console.print(f"[dim]{_now_iso()} checking {len(usernames)} user(s)...[/dim]")
                 checks_failed = False
 
@@ -564,7 +570,8 @@ async def monitor_users(
                         console.print("  [dim]No active broadcasts found.[/dim]")
                     if once:
                         break
-                    await asyncio.sleep(check_interval)
+                    now = asyncio.get_running_loop().time()
+                    await asyncio.sleep(_remaining_interval(round_started, check_interval, now))
                     continue
 
                 for username in list(live_candidates.keys()):
@@ -603,10 +610,12 @@ async def monitor_users(
                         del live_candidates[username]
 
                 if live_candidates:
-                    await asyncio.sleep(live_interval)
+                    now = asyncio.get_running_loop().time()
+                    await asyncio.sleep(_remaining_interval(round_started, live_interval, now))
                 elif once:
                     break
                 else:
-                    await asyncio.sleep(check_interval)
+                    now = asyncio.get_running_loop().time()
+                    await asyncio.sleep(_remaining_interval(round_started, check_interval, now))
         finally:
             await monitor_browser.close()

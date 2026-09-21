@@ -29,6 +29,7 @@ from .config import (
     normalize_username,
 )
 from .downloader import check_ffmpeg, check_yt_dlp, download_all, download_broadcast
+from .home_monitor import home_monitor
 from .monitor import monitor_user, monitor_users
 from .pause_detector import detect_pauses, pause_report, trim_intervals
 from .scanner import scan_user
@@ -133,6 +134,46 @@ def monitor(usernames, config_file, check_interval, live_interval, output, outpu
         output_file=output,
         output_dir=None,
         browser=resolved_browser,
+        download=resolved_download,
+        once=once,
+        app_config=config,
+    ))
+
+
+@main.command()
+@click.argument("usernames", nargs=-1)
+@click.option("--config", "config_file", type=click.Path(dir_okay=False), default=None, help="Config file (default: ./broadcastx.toml when present)")
+@click.option("--check-interval", type=click.IntRange(min=1), default=120, show_default=True, help="Seconds between Home checks")
+@click.option("--output", "-o", default=None, help="Home monitor event JSON file path")
+@click.option("--browser", "-b", default=None, help="Browser for yt-dlp cookies")
+@click.option("--headless/--no-headless", default=None, help="Run browser headless")
+@click.option("--download/--no-download", default=None, help="Download after an ended Home broadcast is confirmed")
+@click.option("--once", is_flag=True, help="Run one Home detection cycle")
+def homemonitor(usernames, config_file, check_interval, output, browser, headless, download, once):
+    """Monitor the Home 'Live on X' area without visiting user profiles.
+
+    USERNAMES can be supplied directly. When omitted, all [[users]] entries
+    from broadcastx.toml are monitored. Spaces are ignored.
+    """
+    config = _load_cli_config(config_file)
+    selected_users = (
+        [normalize_username(username) for username in usernames]
+        if usernames else [user.username for user in config.users]
+    )
+    if not selected_users:
+        raise click.ClickException("Provide USERNAMES or add [[users]] entries to broadcastx.toml")
+    if len(set(selected_users)) != len(selected_users):
+        raise click.ClickException("The homemonitor user list contains duplicates")
+    resolved_download = download if download is not None else config.monitor.download
+    if resolved_download:
+        _require_dependencies("yt-dlp", "ffmpeg")
+
+    asyncio.run(home_monitor(
+        usernames=selected_users,
+        check_interval=check_interval,
+        headless=headless if headless is not None else False,
+        output_file=output,
+        browser=browser if browser is not None else config.monitor.browser,
         download=resolved_download,
         once=once,
         app_config=config,

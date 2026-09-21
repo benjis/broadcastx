@@ -109,6 +109,31 @@ timezone = "Asia/Ho_Chi_Minh"
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn("Provide USERNAMES", result.output)
 
+    def test_homemonitor_uses_configured_users_and_two_minute_default(self):
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            Path("broadcastx.toml").write_text(
+                """
+[monitor]
+headless = true
+download = false
+
+[[users]]
+username = "Alice"
+""".strip()
+            )
+            home_monitor = AsyncMock()
+            with patch("broadcastx.cli.home_monitor", home_monitor):
+                result = runner.invoke(main, ["homemonitor", "--once"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        kwargs = home_monitor.await_args.kwargs
+        self.assertEqual(kwargs["usernames"], ["alice"])
+        self.assertEqual(kwargs["check_interval"], 120)
+        self.assertFalse(kwargs["headless"])
+        self.assertFalse(kwargs["download"])
+        self.assertTrue(kwargs["once"])
+
     def test_download_automatically_loads_user_configuration(self):
         runner = CliRunner()
         with runner.isolated_filesystem():

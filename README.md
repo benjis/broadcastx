@@ -60,6 +60,9 @@ broadcastx download --from output/username/broadcasts.json
 
 # Monitor every user in broadcastx.toml
 broadcastx monitor
+
+# Monitor the single "Live on X" area without visiting user profiles
+broadcastx homemonitor
 ```
 
 ## Configuration
@@ -192,7 +195,7 @@ broadcastx monitor @username --no-download
 
 The monitor runs in a loop:
 
-1. **Profile check** (every `check-interval`, default 30 min) — Opens each profile and looks for broadcast cards.
+1. **Profile check** (every `check-interval`, default 30 min) — Opens each profile and looks for broadcast cards. The interval is measured from the start of each check round, so scan time is not added to it.
 2. **Live detection** — When a candidate is found, checks whether it is currently live.
 3. **Live check** (every `live-interval`, default 5 min) — Re-checks status until the broadcast ends.
 4. **Download** — Downloads the replay automatically.
@@ -200,6 +203,36 @@ The monitor runs in a loop:
 Multiple users share a single Chromium profile, so you only need to log in once.
 
 Events are logged per user to `output/<username>/monitor_events.json`.
+
+### Monitor Live on X from Home
+
+```bash
+# Monitor configured [[users]] from one Home page every two minutes
+broadcastx homemonitor
+
+# Monitor a selected subset or run one detection cycle
+broadcastx homemonitor @SpaceX @NASA
+broadcastx homemonitor --once
+
+# Use the Home fleetline response when X does not render cards headlessly
+broadcastx homemonitor --headless
+```
+
+`homemonitor` is independent from `monitor`. It loads `https://x.com/home`,
+finds Broadcast entries in **Live on X**, ignores Spaces, and filters them to
+the configured or explicitly supplied users. Visible mode opens the rendered
+Broadcast cards; headless mode reads live-video records from the Home page's
+existing `fleetline` response. Neither mode visits every user profile.
+
+New Broadcast URLs are printed and logged to
+`output/homemonitor_events.json`. Active links are stored atomically in
+`output/homemonitor_state.json`, so they survive a process restart. When a
+link disappears from Home, its Broadcast page must confirm that it ended
+before the replay is downloaded. State is retained after an inconclusive
+check or failed download and cleared only after a successful download (or
+after end confirmation with `--no-download`). Detection-related HTTP 429
+responses stop the process; X's unrelated `ViewerBadgeCounts` 429 is reported
+and ignored. The temporary browser closes after every check round.
 
 ### Add watermarks to videos
 
