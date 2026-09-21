@@ -19,12 +19,14 @@ import threading
 import time
 import tempfile
 import math
+import collections
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
+import httpx
 from rich.console import Console
 
 from .config import (
@@ -527,6 +529,12 @@ def _normalize_download_url(url) -> str | None:
         return None
     try:
         parsed = urlsplit(url.strip())
+        if (
+            parsed.scheme == "https"
+            and parsed.netloc.lower() == "pbs.twimg.com"
+            and re.fullmatch(r"/media/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9]+)?", parsed.path)
+        ):
+            return url.strip()
         if parsed.scheme in {"http", "https"} and parsed.netloc.lower() in {"x.com", "twitter.com", "pscp.tv", "www.pscp.tv"}:
             if re.fullmatch(r"/(?:i/broadcasts|w)/[A-Za-z0-9]{8,}/?", parsed.path):
                 if broadcast := normalize_broadcast_url(url):
@@ -545,10 +553,12 @@ def download_video(
     app_config: AppConfig | None = None,
     username: str | None = None,
 ) -> DownloadResult:
-    """Download a broadcast or all native video media in one X post."""
+    """Download a broadcast, X post media, or scanned X photo."""
     normalized = _normalize_download_url(url)
     if not normalized:
-        return DownloadResult(url=url, success=False, error=f"Unsupported video URL: {url}")
+        return DownloadResult(url=url, success=False, error=f"Unsupported media URL: {url}")
+    if urlsplit(normalized).netloc.lower() == "pbs.twimg.com":
+        return _download_photo(normalized, output_dir, app_config, username)
     if normalize_broadcast_url(normalized):
         try:
             return download_broadcast(normalized, output_dir=output_dir, browser=browser,
@@ -556,6 +566,144 @@ def download_video(
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             return DownloadResult(url=normalized, success=False, error=str(exc))
     return _download_tweet(normalized, output_dir, browser, verbose, app_config)
+
+
+def _download_photo(
+    url: str,
+    output_dir: Path | None,
+    app_config: AppConfig | None,
+    username: str | None,
+) -> DownloadResult:
+    """Download one scanner-discovered photo from X's media host."""
+    parsed = urlsplit(url)
+    media_id = Path(parsed.path).stem
+    query_format = parse_qs(parsed.query).get("format", [None])[0]
+    path_suffix = Path(parsed.path).suffix.lstrip(".").lower()
+    extension = (query_format or path_suffix or "jpg").lower()
+    if extension == "jpeg":
+        extension = "jpg"
+    if extension not in {"jpg", "png", "webp", "gif"}:
+        return DownloadResult(url=url, success=False, error="Unsupported photo format")
+    try:
+        owner = normalize_username(username) if username else "unknown"
+    except ConfigError:
+        owner = "unknown"
+    config = app_config or AppConfig()
+    directory = Path(output_dir) if output_dir is not None else user_output_dir(config.output_root, owner) / "photos"
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / f"{media_id}.{extension}"
+    if target.exists():
+        return DownloadResult(
+            url=url, success=True, output_file=str(target), output_files=[str(target)],
+            warning="Already downloaded; existing file was not overwritten", username=owner,
+        )
+    temporary = directory / f".{media_id}.{extension}.tmp"
+    try:
+        with httpx.stream("GET", url, follow_redirects=True, timeout=60.0) as response:
+            response.raise_for_status()
+            with temporary.open("xb") as handle:
+                for chunk in response.iter_bytes():
+                    handle.write(chunk)
+        try:
+            target.hardlink_to(temporary)
+        except FileExistsError:
+            pass
+        console.print(f"  [green]Photo downloaded[/green] → {target}")
+        return DownloadResult(
+            url=url, success=True, output_file=str(target), output_files=[str(target)], username=owner,
+        )
+    except (OSError, httpx.HTTPError) as exc:
+        return DownloadResult(url=url, success=False, error=str(exc), username=owner)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _js_number_to_base36(value: float) -> str:
+    """Match JavaScript Number.toString(36) for X's syndication token."""
+    alphabet = b"0123456789abcdefghijklmnopqrstuvwxyz.-"
+    result: collections.deque[int] = collections.deque()
+    fraction, integer = math.modf(abs(value))
+    delta = max(math.nextafter(0.0, math.inf), math.ulp(value) / 2)
+    if fraction >= delta:
+        result.append(-2)
+    while fraction >= delta:
+        delta *= 36
+        fraction, digit = math.modf(fraction * 36)
+        result.append(int(digit))
+        if (fraction > 0.5 or (fraction == 0.5 and int(digit) & 1)) and fraction + delta > 1:
+            for index in reversed(range(1, len(result))):
+                if result[index] + 1 < 36:
+                    result[index] += 1
+                    break
+                result.pop()
+            else:
+                integer += 1
+            break
+    integer, digit = divmod(int(integer), 36)
+    result.appendleft(digit)
+    while integer > 0:
+        integer, digit = divmod(integer, 36)
+        result.appendleft(digit)
+    return bytes(alphabet[digit] for digit in result).decode("ascii")
+
+
+def _syndication_token(tweet_id: str) -> str:
+    rendered = _js_number_to_base36((int(tweet_id) / 1e15) * math.pi)
+    return rendered.replace("0", "").replace(".", "")
+
+
+def _download_tweet_photos(
+    url: str,
+    output_dir: Path | None,
+    app_config: AppConfig | None,
+) -> DownloadResult:
+    """Resolve an image-only X post and download each photo it owns."""
+    tweet_id = url.rsplit("/", 1)[-1]
+    try:
+        response = httpx.get(
+            "https://cdn.syndication.twimg.com/tweet-result",
+            params={"id": tweet_id, "token": _syndication_token(tweet_id)},
+            headers={"User-Agent": "Googlebot"},
+            follow_redirects=True,
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid X post metadata")
+        user = payload.get("user")
+        username = user.get("screen_name") if isinstance(user, dict) else None
+        details = payload.get("mediaDetails")
+        if not isinstance(details, list):
+            details = []
+        photo_urls = []
+        for media in details:
+            if not isinstance(media, dict) or media.get("type") != "photo":
+                continue
+            photo_url = media.get("media_url_https") or media.get("media_url")
+            if isinstance(photo_url, str):
+                photo_urls.append(photo_url)
+        if not photo_urls:
+            raise ValueError("No photos found in this post")
+    except (OSError, ValueError, httpx.HTTPError) as exc:
+        return DownloadResult(url=url, success=False, error=str(exc))
+
+    results = [
+        _download_photo(photo_url, output_dir, app_config, username)
+        for photo_url in dict.fromkeys(photo_urls)
+    ]
+    files = [path for result in results for path in result.output_files]
+    errors = [result.error for result in results if result.error]
+    warnings = [result.warning for result in results if result.warning]
+    return DownloadResult(
+        url=url,
+        success=bool(files) and not errors,
+        output_file=files[0] if files else None,
+        output_files=files,
+        error="; ".join(errors) or None,
+        warning="; ".join(dict.fromkeys(warnings)) or None,
+        username=results[0].username if results else username,
+    )
 
 
 def _download_tweet(
@@ -655,6 +803,21 @@ def _download_tweet(
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         detail = exc.stderr.strip() if isinstance(exc, subprocess.CalledProcessError) and exc.stderr else str(exc)
         errors.append(detail)
+    had_video_files = bool(files)
+    photo_result = _download_tweet_photos(url, output_dir, app_config)
+    if photo_result.output_files:
+        if not had_video_files:
+            return photo_result
+        files.extend(photo_result.output_files)
+        owner = owner or photo_result.username
+        if photo_result.error and photo_result.error not in errors:
+            errors.append(photo_result.error)
+        if photo_result.warning:
+            warnings.append(photo_result.warning)
+    elif not files and photo_result.error and photo_result.error not in errors:
+        errors.append(photo_result.error)
+    elif files and photo_result.error != "No photos found in this post":
+        warnings.append(f"Photo discovery failed: {photo_result.error}")
     warning = "; ".join(dict.fromkeys(warnings)) or None
     if warning:
         console.print(f"  [yellow]{warning}[/yellow]")
@@ -703,7 +866,14 @@ def download_all(
         all_urls.extend(file_urls)
         if source_username:
             for file_url in file_urls:
-                if isinstance(file_url, str) and (normalized := _normalize_download_url(file_url)) and normalize_broadcast_url(normalized):
+                if (
+                    isinstance(file_url, str)
+                    and (normalized := _normalize_download_url(file_url))
+                    and (
+                        normalize_broadcast_url(normalized)
+                        or urlsplit(normalized).netloc.lower() == "pbs.twimg.com"
+                    )
+                ):
                     username_hints[normalized] = source_username
 
     if not all_urls:
@@ -816,8 +986,9 @@ def _load_download_source(path: Path) -> tuple[list[str], str | None]:
                 urls.append(item)
             elif isinstance(item, dict) and "url" in item:
                 urls.append(item["url"])
-    elif isinstance(data, dict) and "broadcasts" in data:
-        if not isinstance(data["broadcasts"], list):
+    elif isinstance(data, dict) and ("broadcasts" in data or "media" in data):
+        broadcasts = data.get("broadcasts", [])
+        if not isinstance(broadcasts, list):
             raise ValueError(f"Invalid broadcasts array in {path}")
         raw_username = data.get("username")
         if isinstance(raw_username, str):
@@ -825,7 +996,15 @@ def _load_download_source(path: Path) -> tuple[list[str], str | None]:
                 username = normalize_username(raw_username)
             except ConfigError:
                 username = None
-        for item in data["broadcasts"]:
+        for item in broadcasts:
+            if isinstance(item, str):
+                urls.append(item)
+            elif isinstance(item, dict) and "url" in item:
+                urls.append(item["url"])
+        media = data.get("media", [])
+        if not isinstance(media, list):
+            raise ValueError(f"Invalid media array in {path}")
+        for item in media:
             if isinstance(item, str):
                 urls.append(item)
             elif isinstance(item, dict) and "url" in item:
@@ -835,7 +1014,7 @@ def _load_download_source(path: Path) -> tuple[list[str], str | None]:
         raise ValueError(f"Unsupported download source format in {path}")
 
     valid = urls
-    console.print(f"  [dim]Loaded {len(valid)} video URL(s) from {path}[/dim]")
+    console.print(f"  [dim]Loaded {len(valid)} media URL(s) from {path}[/dim]")
     return valid, username
 
 

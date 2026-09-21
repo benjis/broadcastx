@@ -40,6 +40,34 @@ class BroadcastInfo:
         }
 
 
+@dataclass(frozen=True)
+class MediaInfo:
+    """Downloadable media owned by one target-authored post."""
+
+    media_id: str
+    media_type: str
+    url: str
+    tweet_id: str
+    tweet_url: str
+    created_at: str | None = None
+    user_name: str | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            key: value
+            for key, value in {
+                "media_id": self.media_id,
+                "media_type": self.media_type,
+                "url": self.url,
+                "tweet_id": self.tweet_id,
+                "tweet_url": self.tweet_url,
+                "created_at": self.created_at,
+                "user_name": self.user_name,
+            }.items()
+            if value is not None
+        }
+
+
 def _looks_like_tweet(obj: object) -> bool:
     if not isinstance(obj, dict):
         return False
@@ -68,6 +96,19 @@ def _iter_tweets(obj: object) -> Iterator[dict]:
     elif isinstance(obj, list):
         for item in obj:
             yield from _iter_tweets(item)
+
+
+def _iter_timeline_tweets(obj: object) -> Iterator[dict]:
+    """Yield timeline tweet wrappers without descending into quote/repost payloads."""
+    if isinstance(obj, dict):
+        if _looks_like_tweet(obj):
+            yield obj
+            return
+        for value in obj.values():
+            yield from _iter_timeline_tweets(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _iter_timeline_tweets(item)
 
 
 def _iter_dicts(obj: object) -> Iterator[dict]:
@@ -142,7 +183,7 @@ def extract_post_ids_from_response(data: dict, username: str) -> set[str]:
     target_user_ids = _target_user_ids(data, target)
     return {
         tweet_id
-        for tweet in _iter_tweets(data)
+        for tweet in _iter_timeline_tweets(data)
         if _is_target_tweet(tweet, target, target_user_ids)
         if (tweet_id := _tweet_id(tweet)) is not None
     }
@@ -176,6 +217,75 @@ def _tweet_payload_strings(tweet: dict) -> Iterator[str]:
             yield from _iter_strings(payload)
 
 
+def _is_repost(tweet: dict) -> bool:
+    legacy = tweet.get("legacy")
+    return bool(
+        isinstance(legacy, dict)
+        and isinstance(legacy.get("retweeted_status_result"), dict)
+    ) or isinstance(tweet.get("retweeted_status_result"), dict)
+
+
+def _owned_media(tweet: dict) -> list[dict]:
+    """Return only media attached directly to this tweet wrapper."""
+    legacy = tweet.get("legacy")
+    if not isinstance(legacy, dict):
+        return []
+    extended = legacy.get("extended_entities")
+    if not isinstance(extended, dict):
+        extended = tweet.get("extended_entities")
+    media = extended.get("media") if isinstance(extended, dict) else None
+    return [item for item in media if isinstance(item, dict)] if isinstance(media, list) else []
+
+
+def extract_media_from_response(data: dict, username: str) -> list[MediaInfo]:
+    """Extract target-owned photos and video-post URLs, excluding reposts."""
+    target = username.lstrip("@").casefold()
+    target_user_ids = _target_user_ids(data, target)
+    media_items: list[MediaInfo] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for tweet in _iter_timeline_tweets(data):
+        if not _is_target_tweet(tweet, target, target_user_ids) or _is_repost(tweet):
+            continue
+        tweet_id = _tweet_id(tweet)
+        legacy = tweet.get("legacy")
+        if tweet_id is None or not isinstance(legacy, dict):
+            continue
+        author = _screen_name(tweet) or username.lstrip("@")
+        tweet_url = f"https://x.com/{author}/status/{tweet_id}"
+        video_added = False
+        for index, media in enumerate(_owned_media(tweet), 1):
+            media_type = media.get("type")
+            media_id = str(media.get("id_str") or media.get("media_key") or index)
+            if media_type in {"video", "animated_gif"}:
+                if video_added:
+                    continue
+                url = tweet_url
+                video_added = True
+                normalized_type = "video"
+            elif media_type == "photo":
+                url = media.get("media_url_https") or media.get("media_url")
+                if not isinstance(url, str):
+                    continue
+                normalized_type = "photo"
+            else:
+                continue
+            key = (tweet_id, normalized_type, url)
+            if key in seen:
+                continue
+            seen.add(key)
+            media_items.append(MediaInfo(
+                media_id=media_id,
+                media_type=normalized_type,
+                url=url,
+                tweet_id=tweet_id,
+                tweet_url=tweet_url,
+                created_at=legacy.get("created_at"),
+                user_name=author,
+            ))
+    return media_items
+
+
 def extract_broadcasts_from_response(data: dict, username: str) -> list[BroadcastInfo]:
     """Extract broadcasts from posts authored by ``username`` in a GraphQL response."""
     target = username.lstrip("@").casefold()
@@ -183,7 +293,7 @@ def extract_broadcasts_from_response(data: dict, username: str) -> list[Broadcas
     broadcasts: list[BroadcastInfo] = []
     seen_ids: set[str] = set()
 
-    for tweet in _iter_tweets(data):
+    for tweet in _iter_timeline_tweets(data):
         author = _screen_name(tweet)
         if not _is_target_tweet(tweet, target, target_user_ids):
             continue

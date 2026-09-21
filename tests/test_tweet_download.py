@@ -8,7 +8,7 @@ from click.testing import CliRunner
 
 from broadcastx.cli import main
 from broadcastx.config import AppConfig, ConfigError, DownloadConfig, format_video_stem, load_config, normalize_tweet_url
-from broadcastx.downloader import DownloadResult, _load_download_source, download_all, download_video
+from broadcastx.downloader import DownloadResult, _load_download_source, _syndication_token, download_all, download_video
 
 TWEET = "https://x.com/Alice/status/123456"
 BROADCAST = "https://x.com/i/broadcasts/1vAxRkBbDRzKl"
@@ -52,6 +52,7 @@ def invoke_download(tmp_path, payload, fail_ids=()):
     commands = []
     with (patch("broadcastx.downloader.subprocess.run", return_value=Mock(stdout=json.dumps(payload))),
           patch("broadcastx.downloader.subprocess.Popen", side_effect=fake_download(commands, fail_ids)),
+          patch("broadcastx.downloader._download_tweet_photos", return_value=DownloadResult(TWEET, False, error="No photos found in this post")),
           patch("broadcastx.downloader.extract_rotation_sidecar") as rotation):
         result = download_video(TWEET, app_config=AppConfig(output_root=tmp_path), browser="firefox")
         rotation.assert_not_called()
@@ -70,6 +71,103 @@ def test_single_video_and_repeat_skip(tmp_path):
     repeated, commands = invoke_download(tmp_path, media())
     assert repeated.success and not commands
     assert Path(repeated.output_file).read_bytes() == b"keep"
+
+
+def test_scanned_photo_downloads_to_owner_photo_directory(tmp_path):
+    response = Mock()
+    response.raise_for_status.return_value = None
+    response.iter_bytes.return_value = [b"photo"]
+    stream = Mock()
+    stream.__enter__ = Mock(return_value=response)
+    stream.__exit__ = Mock(return_value=False)
+    with patch("broadcastx.downloader.httpx.stream", return_value=stream):
+        result = download_video(
+            "https://pbs.twimg.com/media/photo123.jpg",
+            app_config=AppConfig(output_root=tmp_path),
+            username="Alice",
+        )
+
+    assert result.success
+    assert Path(result.output_file) == tmp_path / "alice" / "photos" / "photo123.jpg"
+    assert Path(result.output_file).read_bytes() == b"photo"
+
+
+def test_image_post_url_downloads_every_owned_photo(tmp_path):
+    metadata = Mock()
+    metadata.raise_for_status.return_value = None
+    metadata.json.return_value = {
+        "user": {"screen_name": "Alice"},
+        "mediaDetails": [
+            {"type": "photo", "media_url_https": "https://pbs.twimg.com/media/photo1.jpg"},
+            {"type": "photo", "media_url_https": "https://pbs.twimg.com/media/photo2.jpg"},
+        ],
+    }
+    photo = Mock()
+    photo.raise_for_status.return_value = None
+    photo.iter_bytes.return_value = [b"photo"]
+    stream = Mock()
+    stream.__enter__ = Mock(return_value=photo)
+    stream.__exit__ = Mock(return_value=False)
+    probe_error = subprocess.CalledProcessError(1, "yt-dlp", stderr="No video")
+
+    with (
+        patch("broadcastx.downloader.subprocess.run", side_effect=probe_error),
+        patch("broadcastx.downloader.httpx.get", return_value=metadata) as get,
+        patch("broadcastx.downloader.httpx.stream", return_value=stream),
+    ):
+        result = download_video(TWEET, app_config=AppConfig(output_root=tmp_path))
+
+    assert result.success
+    assert [Path(path).name for path in result.output_files] == ["photo1.jpg", "photo2.jpg"]
+    assert all(Path(path).parent == tmp_path / "alice" / "photos" for path in result.output_files)
+    assert get.call_args.kwargs["params"] == {"id": "123456", "token": _syndication_token("123456")}
+
+
+def test_image_post_failure_preserves_video_probe_and_photo_errors(tmp_path):
+    metadata = Mock()
+    metadata.raise_for_status.return_value = None
+    metadata.json.return_value = {"mediaDetails": []}
+    probe_error = subprocess.CalledProcessError(1, "yt-dlp", stderr="Login required")
+    with (
+        patch("broadcastx.downloader.subprocess.run", side_effect=probe_error),
+        patch("broadcastx.downloader.httpx.get", return_value=metadata),
+    ):
+        result = download_video(TWEET, app_config=AppConfig(output_root=tmp_path))
+
+    assert not result.success
+    assert "Login required" in result.error
+    assert "No photos found" in result.error
+
+
+def test_mixed_post_downloads_videos_then_photos(tmp_path):
+    metadata = Mock()
+    metadata.raise_for_status.return_value = None
+    metadata.json.return_value = {
+        "user": {"screen_name": "Alice"},
+        "mediaDetails": [
+            {"type": "video", "media_url_https": "https://pbs.twimg.com/media/video-thumb.jpg"},
+            {"type": "photo", "media_url_https": "https://pbs.twimg.com/media/photo1.jpg"},
+            {"type": "photo", "media_url_https": "https://pbs.twimg.com/media/photo2.jpg"},
+        ],
+    }
+    photo = Mock()
+    photo.raise_for_status.return_value = None
+    photo.iter_bytes.return_value = [b"photo"]
+    stream = Mock()
+    stream.__enter__ = Mock(return_value=photo)
+    stream.__exit__ = Mock(return_value=False)
+    commands = []
+    with (
+        patch("broadcastx.downloader.subprocess.run", return_value=Mock(stdout=json.dumps(media()))),
+        patch("broadcastx.downloader.subprocess.Popen", side_effect=fake_download(commands)),
+        patch("broadcastx.downloader.httpx.get", return_value=metadata),
+        patch("broadcastx.downloader.httpx.stream", return_value=stream),
+    ):
+        result = download_video(TWEET, app_config=AppConfig(output_root=tmp_path))
+
+    assert result.success
+    assert [Path(path).suffix for path in result.output_files] == [".mp4", ".jpg", ".jpg"]
+    assert [Path(path).name for path in result.output_files[1:]] == ["photo1.jpg", "photo2.jpg"]
 
 
 def test_multi_video_partial_failure_preserves_success_and_continues(tmp_path):
@@ -99,6 +197,7 @@ def test_concurrent_downloads_do_not_overwrite_or_share_temporary_files(tmp_path
         return start(cmd, **kwargs)
     with (patch("broadcastx.downloader.subprocess.run", return_value=Mock(stdout=json.dumps(media()))),
           patch("broadcastx.downloader.subprocess.Popen", side_effect=concurrent_start),
+          patch("broadcastx.downloader._download_tweet_photos", return_value=DownloadResult(TWEET, False, error="No photos found in this post")),
           ThreadPoolExecutor(max_workers=2) as executor):
         futures = [executor.submit(download_video, TWEET, output_dir=tmp_path) for _ in range(2)]
         results = [future.result() for future in futures]
@@ -112,7 +211,8 @@ def test_exit_zero_without_final_file_is_failure(tmp_path):
     import io
     process = Mock(returncode=0, stdout=io.StringIO("[download] finished\n"))
     with (patch("broadcastx.downloader.subprocess.run", return_value=Mock(stdout=json.dumps(media()))),
-          patch("broadcastx.downloader.subprocess.Popen", return_value=process)):
+          patch("broadcastx.downloader.subprocess.Popen", return_value=process),
+          patch("broadcastx.downloader._download_tweet_photos", return_value=DownloadResult(TWEET, False, error="No photos found in this post"))):
         result = download_video(TWEET, output_dir=tmp_path)
     assert not result.success and "final video file" in result.error
 
@@ -131,7 +231,8 @@ def test_no_video_or_external_metadata_fails(tmp_path, payload):
 
 
 def test_probe_error_is_reported():
-    with patch("broadcastx.downloader.subprocess.run", side_effect=subprocess.CalledProcessError(1, "yt-dlp", stderr="Login required")):
+    with (patch("broadcastx.downloader.subprocess.run", side_effect=subprocess.CalledProcessError(1, "yt-dlp", stderr="Login required")),
+          patch("broadcastx.downloader._download_tweet_photos", return_value=DownloadResult(TWEET, False, error="No photos found in this post"))):
         assert "Login required" in download_video(TWEET).error
 
 
@@ -165,7 +266,7 @@ def test_plain_json_sources_accept_both_link_types(tmp_path):
 
 def test_cli_exit_and_help():
     runner = CliRunner()
-    assert "All videos" in " ".join(runner.invoke(main, ["download", "--help"]).output.split())
+    assert "All videos and photos" in " ".join(runner.invoke(main, ["download", "--help"]).output.split())
     with patch("broadcastx.cli._require_dependencies"), patch("broadcastx.cli.download_all", return_value=[DownloadResult(TWEET, False)]):
         assert runner.invoke(main, ["download", TWEET]).exit_code == 1
 

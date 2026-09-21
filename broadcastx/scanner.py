@@ -30,7 +30,9 @@ console = Console()
 
 from .models import (
     BroadcastInfo,
+    MediaInfo,
     extract_broadcasts_from_response,
+    extract_media_from_response,
     extract_post_ids_from_response,
 )
 from .x_auth import has_auth_cookies, looks_logged_out
@@ -40,6 +42,7 @@ class ScanResult:
     """Result of scanning a user's timeline."""
     username: str
     broadcasts: list[BroadcastInfo] = field(default_factory=list)
+    media: list[MediaInfo] = field(default_factory=list)
     tweets_scanned: int = 0
     scrolls_performed: int = 0
     responses_seen: int = 0
@@ -108,9 +111,10 @@ async def scan_user(
     headless: bool = DEFAULT_HEADLESS,
     output_file: Path | str | None = None,
     output_root: Path | str = DEFAULT_OUTPUT_DIR,
+    include_all: bool = False,
 ) -> ScanResult:
     """
-    Scan a Twitter/X user's timeline for broadcast links.
+    Scan a Twitter/X user's timeline for broadcast links and optional media.
 
     Opens the user's profile in Playwright, scrolls through their timeline,
     and intercepts GraphQL responses to find broadcast URLs.
@@ -125,6 +129,7 @@ async def scan_user(
 
     result = ScanResult(username=username)
     all_broadcasts: dict[str, BroadcastInfo] = {}
+    all_media: dict[tuple[str, str, str], MediaInfo] = {}
     progress = TimelineProgress()
 
     try:
@@ -139,7 +144,8 @@ async def scan_user(
     profile_dir = Path.home() / ".broadcastx" / "chrome-profile"
     profile_dir.mkdir(parents=True, exist_ok=True)
 
-    console.print(f"\n[bold]Scanning @{username} for broadcasts...[/bold]")
+    target_label = "broadcasts, videos, and photos" if include_all else "broadcasts"
+    console.print(f"\n[bold]Scanning @{username} for {target_label}...[/bold]")
     console.print(f"  [dim]Using Chrome profile: {profile_dir}[/dim]\n")
 
     context = None
@@ -187,6 +193,15 @@ async def scan_user(
                             continue
                         all_broadcasts[broadcast.broadcast_id] = broadcast
                         console.print(f"  [green]🔴 Found:[/green] {broadcast.url}")
+                    if include_all:
+                        for media in extract_media_from_response(body, username):
+                            key = (media.tweet_id, media.media_type, media.url)
+                            if key in all_media:
+                                continue
+                            all_media[key] = media
+                            console.print(
+                                f"  [green]Found {media.media_type}:[/green] {media.url}"
+                            )
 
                 page.on("response", handle_response)
 
@@ -237,7 +252,8 @@ async def scan_user(
                         console.print(
                             f"  [dim]  Scroll {scroll_number}/{max_scrolls} | "
                             f"{len(progress.seen_post_ids)} posts | "
-                            f"{len(all_broadcasts)} broadcasts[/dim]"
+                            f"{len(all_broadcasts)} broadcasts | "
+                            f"{len(all_media)} media[/dim]"
                         )
                 else:
                     result.stop_reason = "max_scrolls"
@@ -255,6 +271,7 @@ async def scan_user(
         _record_error(result, f"Scan failed: {type(exc).__name__}: {exc}")
     finally:
         result.broadcasts = list(all_broadcasts.values())
+        result.media = list(all_media.values())
         result.tweets_scanned = len(progress.seen_post_ids)
         result.responses_seen = progress.responses_seen
         if result.stop_reason != "login_required":
@@ -264,12 +281,12 @@ async def scan_user(
                 _record_error(result, "No GraphQL responses could be parsed")
             elif not progress.seen_post_ids:
                 _record_error(result, "No target-authored posts were found in GraphQL responses")
-        _save_results(result, output_file)
+        _save_results(result, output_file, include_media=include_all)
         _print_summary(result)
     return result
 
 
-def _save_results(result: ScanResult, output_file: Path):
+def _save_results(result: ScanResult, output_file: Path, include_media: bool = False):
     """Save scan results to JSON, merging with any existing data."""
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -298,6 +315,22 @@ def _save_results(result: ScanResult, output_file: Path):
         "total_broadcasts": len(broadcasts_list),
         "broadcasts": broadcasts_list,
     }
+    if include_media or "media" in existing:
+        existing_media = existing.get("media", [])
+        if not isinstance(existing_media, list):
+            existing_media = []
+        existing_keys = {
+            (item.get("tweet_id"), item.get("media_type"), item.get("url"))
+            for item in existing_media
+            if isinstance(item, dict)
+        }
+        media_entries = [
+            item.to_dict()
+            for item in result.media
+            if (item.tweet_id, item.media_type, item.url) not in existing_keys
+        ]
+        data["media"] = existing_media + media_entries
+        data["total_media"] = len(data["media"])
 
     temporary = output_file.with_name(f".{output_file.name}.tmp")
     temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False))
@@ -325,6 +358,7 @@ def _print_summary(result: ScanResult):
         )
     console.print(
         f"\n[bold]{len(result.broadcasts)}[/bold] broadcast(s) found | "
+        f"[bold]{len(result.media)}[/bold] media item(s) found | "
         f"{result.tweets_scanned} posts | {result.scrolls_performed} scrolls | "
         f"{result.responses_seen} GraphQL responses | "
         f"stop: {result.stop_reason or 'unknown'}"

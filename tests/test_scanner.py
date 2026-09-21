@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from broadcastx.models import BroadcastInfo
+from broadcastx.models import BroadcastInfo, MediaInfo
 from broadcastx.scanner import (
     ScanResult,
     TimelineProgress,
@@ -121,6 +121,24 @@ class ScanResultPersistenceTests(unittest.TestCase):
 
             saved = json.loads(output.read_text())
             self.assertEqual(saved["broadcasts"], [])
+
+    def test_save_all_results_merges_and_deduplicates_media(self):
+        media = MediaInfo(
+            media_id="photo-1", media_type="photo",
+            url="https://pbs.twimg.com/media/photo-1.jpg",
+            tweet_id="123", tweet_url="https://x.com/target_creator/status/123",
+            user_name="target_creator",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "broadcasts.json"
+            result = ScanResult(username="target_creator", media=[media])
+
+            _save_results(result, output, include_media=True)
+            _save_results(result, output, include_media=True)
+
+            saved = json.loads(output.read_text())
+            self.assertEqual(saved["total_media"], 1)
+            self.assertEqual(saved["media"][0]["media_type"], "photo")
 
 
 if __name__ == "__main__":

@@ -55,6 +55,9 @@ uv run playwright install chromium
 # Scan a user's timeline for broadcast links
 broadcastx scan @username
 
+# Include the user's own videos and photos (reposts are excluded)
+broadcastx scan @username --all
+
 # Download broadcasts from scan results
 broadcastx download --from output/username/broadcasts.json
 
@@ -111,9 +114,12 @@ broadcastx scan @username
 #   --idle-timeout 20.0    Stop after N seconds with no new target posts
 #   --output FILE          Override path (default: output/<user>/broadcasts.json)
 #   --headless             Run browser without visible window
+#   --all                  Include original post videos and photos; exclude reposts
 ```
 
 The scanner opens the user's X profile in Chrome, scrolls through the timeline, and intercepts API responses. Broadcast URLs are extracted from tweet cards. If you are not logged in, the browser shows the login page — log in manually, then press Enter in the terminal to continue. Your session is saved to `~/.broadcastx/chrome-profile/` for future runs.
+
+With `--all`, the same `broadcasts.json` also contains a `media` array. Videos are represented by their post URL so the downloader fetches every video in that post. Photos use their direct X media URL. Replies are included; plain reposts are excluded. For quote posts, only media attached by the target user is included, not media from the quoted post.
 
 ### Download broadcasts and post videos
 
@@ -121,13 +127,13 @@ The scanner opens the user's X profile in Chrome, scrolls through the timeline, 
 # Single broadcast
 broadcastx download https://x.com/i/broadcasts/1vAxRkBbDRzKl
 
-# Ordinary post: download every video (also accepts twitter.com links)
+# Ordinary post: download every video or photo (also accepts twitter.com links)
 broadcastx download https://x.com/username/status/1234567890123456789
 
 # Mix broadcasts and ordinary posts
 broadcastx download https://x.com/i/broadcasts/1vAxRkBbDRzKl https://x.com/username/status/1234567890123456789
 
-# From scan results; the scanner username is preserved for routing
+# From scan results; Broadcasts, videos, and photos can be mixed
 broadcastx download --from output/username/broadcasts.json
 
 # Multiple concurrent downloads
@@ -150,20 +156,28 @@ then selects the matching user config and output directory automatically. If
 the user cannot be identified, it uses global settings and
 `output/unknown/videos/`.
 
-Ordinary post videos use `video_filename_template`, globally or in `[[users]]`.
+Ordinary video posts use `video_filename_template`, globally or in `[[users]]`.
 It accepts `{datetime}`, `{tweet_id}`, and `{media_id}`; both IDs are required.
 The existing timezone and datetime format settings apply. Missing timestamps
 fall back to `<tweet_id>_<media_id>`; missing media IDs use stable media indices.
-Videos are saved under `<output_root>/<user>/videos/` and existing files are
+Videos are saved under `<output_root>/<user>/videos/`; scanned photos are saved
+under `<output_root>/<user>/photos/`. Existing files are
 skipped without overwriting. Post `/video/N` links download the entire post.
 
 `--from` also accepts mixed URL arrays or arrays of `{"url": "..."}` objects.
-Invalid links, posts without native video, and permission errors are reported
+Image-only post URLs are resolved automatically and every photo owned by the
+post is downloaded. Mixed-media posts download videos first, then photos, and
+return all files as one result. Invalid links, posts without native media, and permission errors are reported
 as failures. Other downloads continue, and any failure yields a nonzero exit
-code; successfully downloaded videos are retained. External video site links
+code; successfully downloaded media is retained. External video site links
 are not followed. Broadcast rotation correction remains unchanged; ordinary
-post downloads do not create rotation sidecars. Scan and monitor still
-discover Broadcast links only.
+post downloads do not create rotation sidecars. Monitor still discovers
+Broadcast links only; Scan includes post media when `--all` is supplied.
+
+For scanner JSON, `download --from` reads `broadcasts` first and `media`
+second, deduplicating by first occurrence. The default `--parallel 1` processes
+that order strictly. With `--parallel N`, completion output may appear in any
+order, while returned results retain the source order.
 
 ### Monitor profiles for live broadcasts
 

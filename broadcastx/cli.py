@@ -73,10 +73,12 @@ def _require_dependencies(*tools: str) -> None:
 @click.option("--idle-timeout", "-t", type=float, default=None, help="Stop after N seconds with no new target posts")
 @click.option("--output", "-o", default=None, help="Output JSON file path")
 @click.option("--headless/--no-headless", default=None, help="Run browser headless")
-def scan(username, config_file, max_scrolls, scroll_delay, idle_timeout, output, headless):
+@click.option("--all", "include_all", is_flag=True, help="Also find original post videos and photos; exclude reposts")
+def scan(username, config_file, max_scrolls, scroll_delay, idle_timeout, output, headless, include_all):
     """Scan a user's timeline for broadcast links.
 
     USERNAME can be with or without @ (e.g., @elonmusk or elonmusk).
+    Use --all to include videos and photos from the user's own posts.
     """
     config = _load_cli_config(config_file)
     asyncio.run(scan_user(
@@ -87,6 +89,7 @@ def scan(username, config_file, max_scrolls, scroll_delay, idle_timeout, output,
         headless=headless if headless is not None else config.scan.headless,
         output_file=output,
         output_root=config.output_root,
+        include_all=include_all,
     ))
 
 
@@ -189,10 +192,10 @@ def homemonitor(usernames, config_file, check_interval, output, browser, headles
 @click.option("--verbose", "-v", is_flag=True, help="Show yt-dlp output")
 @click.option("--parallel", "-p", default=1, help="Number of concurrent downloads (default: 1)")
 def download(urls, config_file, from_file, output_dir, browser, verbose, parallel):
-    """Download Broadcast and X/Twitter post videos.
+    """Download Broadcasts and X/Twitter post media.
 
     Pass Broadcast or X/Twitter status URLs, or use --from for a JSON file.
-    All videos in each post are downloaded. Mixed link types are supported.
+    All videos and photos in each post are downloaded.
 
     Examples:
 

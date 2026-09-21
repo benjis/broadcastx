@@ -49,6 +49,14 @@ headless = true
         self.assertTrue(kwargs["headless"])
         self.assertEqual(kwargs["output_root"].name, "archive")
 
+    def test_scan_all_enables_owned_timeline_media(self):
+        scan_user = AsyncMock()
+        with patch("broadcastx.cli.scan_user", scan_user):
+            result = CliRunner().invoke(main, ["scan", "Alice", "--all"])
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertTrue(scan_user.await_args.kwargs["include_all"])
+
     def test_monitor_without_usernames_uses_automatically_discovered_config(self):
         runner = CliRunner()
         with runner.isolated_filesystem():

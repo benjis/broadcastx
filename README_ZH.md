@@ -50,6 +50,9 @@ uv run playwright install chromium
 # 扫描用户时间线，查找直播链接
 broadcastx scan @username
 
+# 同时扫描用户自己发布的视频和照片（排除普通转发）
+broadcastx scan @username --all
+
 # 从扫描结果下载直播
 broadcastx download --from output/username/broadcasts.json
 
@@ -96,6 +99,9 @@ timezone = "Asia/Ho_Chi_Minh"
 ```bash
 broadcastx scan @username
 
+# 扫描直播、原创视频和原创照片，并排除普通转发
+broadcastx scan @username --all
+
 # 可选参数：
 #   --max-scrolls 100      最大滚动次数
 #   --scroll-delay 2.0     滚动间隔（秒）
@@ -106,19 +112,21 @@ broadcastx scan @username
 
 扫描器会打开用户的 X 主页，向下滚动时间线并拦截 API 响应。直播 URL 从推文卡片中提取。如果未登录，浏览器会显示登录页面——手动登录后在终端按 Enter 继续。会话信息保存在 `~/.broadcastx/chrome-profile/` 中，供后续使用。
 
-### 下载直播和普通推文视频
+使用 `--all` 时，同一个 `broadcasts.json` 还会包含 `media` 数组。视频以 Post URL 保存，让下载器获取该 Post 内的全部视频；照片保存为 X 的直接媒体 URL。Reply 会包含，普通 Repost 会排除；Quote Post 只包含目标用户自己附加的媒体，不包含被引用 Post 的媒体。
+
+### 下载直播和普通 Post 媒体
 
 ```bash
 # 单一直播
 broadcastx download https://x.com/i/broadcasts/1vAxRkBbDRzKl
 
-# 普通推文：下载其中全部视频，也支持 twitter.com 链接
+# 普通 Post：下载其中全部视频或照片，也支持 twitter.com 链接
 broadcastx download https://x.com/username/status/1234567890123456789
 
 # 混合下载直播和普通推文
 broadcastx download https://x.com/i/broadcasts/1vAxRkBbDRzKl https://x.com/username/status/1234567890123456789
 
-# 从扫描结果批量下载
+# 从扫描结果批量下载直播、视频和照片
 broadcastx download --from output/username/broadcasts.json
 
 # 多并发下载
@@ -140,16 +148,25 @@ BroadcastX **自动修正手机旋转方向**：如果直播 HLS 流中包含方
 时间，自动选择对应用户的配置与输出目录。无法识别用户时使用全局配置并写入
 `output/unknown/videos/`。
 
-普通推文使用独立的 `video_filename_template`，可在 `[download]` 或
+普通视频 Post 使用独立的 `video_filename_template`，可在 `[download]` 或
 `[[users]]` 中设置。允许 `{datetime}`、`{tweet_id}`、`{media_id}`，必须包含
 两个 ID。时区和时间格式沿用现有配置；缺少时间时使用 `<tweet_id>_<media_id>`，
-缺少媒体 ID 时使用稳定的媒体序号。文件保存在 `<output_root>/<用户>/videos/`，
-已存在文件直接跳过，不覆盖。`/video/N` 链接也会下载整条推文的全部视频。
+缺少媒体 ID 时使用稳定的媒体序号。视频保存在
+`<output_root>/<user>/videos/`，照片保存在
+`<output_root>/<user>/photos/`。已存在文件直接跳过，不覆盖。
+`/video/N` 链接也会下载整条推文的全部视频。
 
 `--from` 支持混合 URL 数组或 `{"url": "..."}` 对象数组。非法链接、无原生视频、
+纯图片 Post URL 会被自动解析并下载其中属于该 Post 的全部照片。混合媒体 Post
+先下载全部视频，再下载全部照片，并将所有文件放在同一个结果中。
 权限不足等情况会明确报告失败，并继续其他下载；任何失败使命令返回非零退出码，
 已成功的文件会保留。不跟随外部视频网站链接。直播旋转校正保持现有行为，
-普通推文不生成旋转侧车文件。scan 和 monitor 仍仅发现 Broadcast 链接。
+普通 Post 不生成旋转侧车文件。monitor 仍仅发现 Broadcast；scan 只有在传入
+`--all` 时才额外发现普通 Post 媒体。
+
+对于扫描生成的 JSON，`download --from` 先读取 `broadcasts`，再读取 `media`，
+并按第一次出现的位置去重。默认的 `--parallel 1` 严格按这个顺序逐一下载；使用
+`--parallel N` 时完成提示可能乱序，但返回结果仍保持来源顺序。
 
 ### 监控直播
 
