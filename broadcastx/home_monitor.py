@@ -22,6 +22,17 @@ from .monitor import (
 
 console = Console()
 HOME_IGNORED_429_OPERATIONS = {"ViewerBadgeCounts"}
+HOME_PROFILE_LOCK_RETRY_DELAYS = (1, 3, 5)
+
+
+def _is_profile_lock_error(error: Exception) -> bool:
+    message = str(error).casefold()
+    return any(marker in message for marker in (
+        "processsingleton",
+        "singletonlock",
+        "profile is already in use",
+        "profile directory is already in use",
+    ))
 
 
 class HomeRateLimitError(RuntimeError):
@@ -57,7 +68,23 @@ class _HomeMonitorBrowser(_MonitorBrowser):
         page.on("response", observe)
 
     async def open(self) -> None:
-        await super().open()
+        from playwright.async_api import Error
+
+        for attempt in range(len(HOME_PROFILE_LOCK_RETRY_DELAYS) + 1):
+            try:
+                await super().open()
+                break
+            except Error as error:
+                if not _is_profile_lock_error(error) or attempt == len(
+                    HOME_PROFILE_LOCK_RETRY_DELAYS
+                ):
+                    raise
+                delay = HOME_PROFILE_LOCK_RETRY_DELAYS[attempt]
+                console.print(
+                    f"  Chrome profile is still in use; retrying in {delay}s...",
+                    style="yellow",
+                )
+                await asyncio.sleep(delay)
         await self._prepare_page(self.page)
 
     async def recover(self, path: Path, username: str) -> None:

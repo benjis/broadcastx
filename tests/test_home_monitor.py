@@ -3,6 +3,8 @@ from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, Mock, patch
 
+from playwright.async_api import Error
+
 from broadcastx.home_monitor import (
     HomeBroadcast,
     HomeRateLimitError,
@@ -14,6 +16,7 @@ from broadcastx.home_monitor import (
     _reconcile_active,
     _save_active_state,
 )
+from broadcastx.monitor import _MonitorBrowser
 
 
 def test_reconcile_active_reports_new_and_missing_transitions():
@@ -72,6 +75,42 @@ def test_active_state_round_trip_supports_process_restart(tmp_path):
 
 
 class CollectHomeBroadcastsTests(IsolatedAsyncioTestCase):
+    async def test_home_browser_retries_transient_profile_lock(self):
+        browser = _HomeMonitorBrowser(None, Path("/tmp/broadcastx-home-test"), True)
+        page = Mock()
+        page.on = Mock()
+        attempts = 0
+
+        async def open_browser(_browser):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise Error(
+                    "Failed to create a ProcessSingleton for your profile directory; "
+                    "SingletonLock: File exists"
+                )
+            browser.page = page
+
+        with patch.object(_MonitorBrowser, "open", open_browser), patch(
+            "broadcastx.home_monitor.asyncio.sleep", new=AsyncMock()
+        ) as sleep:
+            await browser.open()
+
+        self.assertEqual(attempts, 2)
+        sleep.assert_awaited_once_with(1)
+        page.on.assert_called_once()
+
+    async def test_home_browser_does_not_retry_unrelated_launch_error(self):
+        browser = _HomeMonitorBrowser(None, Path("/tmp/broadcastx-home-test"), True)
+
+        with patch.object(
+            _MonitorBrowser, "open", new=AsyncMock(side_effect=Error("Chrome executable missing")),
+        ), patch("broadcastx.home_monitor.asyncio.sleep", new=AsyncMock()) as sleep:
+            with self.assertRaisesRegex(Error, "Chrome executable missing"):
+                await browser.open()
+
+        sleep.assert_not_awaited()
+
     async def test_headless_collects_selected_user_from_fleetline(self):
         class Response:
             url = "https://x.com/i/api/2/fleetline"
