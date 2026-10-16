@@ -4,13 +4,13 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/) [![PyPI](https://img.shields.io/pypi/v/broadcastx.svg)](https://pypi.org/project/broadcastx/)
 
-发现、监控并下载 X/Twitter 用户时间线中的直播视频。
+发现、监控并下载 X/Twitter 直播和普通 Post 媒体。
 
 **BroadcastX** 是一款命令行工具，支持以下功能：
 
-- **扫描** — 查找用户时间线中的直播链接
-- **下载** — 下载直播视频，并自动修正手机旋转方向
-- **监控** — 监控用户主页，检测直播开始，自动下载回放
+- **扫描** — 查找直播链接，使用 `--all` 还可扫描普通 Post 视频和照片
+- **下载** — 下载直播并自动修正手机旋转方向，也支持普通 Post 视频和照片
+- **监控** — 推荐使用 `homemonitor` 从 X Home 发现直播并自动下载回放；原有 `monitor` 继续可用
 
 ## 功能特性
 
@@ -24,7 +24,13 @@
 
 ### 监控
 
-持续监控用户主页。检测到直播时，定期检查直播状态。直播结束后自动下载回放。
+日常监控推荐使用 **`broadcastx homemonitor`**。它定期加载当前登录账号的
+X Home（首页）**Live on X** 列表，再筛选指定用户，无需逐个扫描用户的个人主页。
+这样可以省去逐用户的时间线扫描，目的是降低网络开销，尤其适合监控多个用户；
+目前没有量化的带宽基准数据。已发现的直播从一次成功加载的列表中消失时，立即开始下载回放。
+
+发现范围取决于 X 向当前账号展示的 Home 列表，无法保证覆盖所有指定用户。
+原有 **`broadcastx monitor`** 继续支持逐用户扫描个人主页，并单独检查直播状态。
 
 
 ## 前置依赖
@@ -56,8 +62,11 @@ broadcastx scan @username --all
 # 从扫描结果下载直播
 broadcastx download --from output/username/broadcasts.json
 
-# 监控 broadcastx.toml 中的全部用户
-broadcastx monitor
+# 推荐：通过 X Home 监控 broadcastx.toml 中的全部用户
+broadcastx homemonitor
+
+# 不使用配置文件，直接指定用户
+broadcastx homemonitor @username
 ```
 
 ## 配置文件
@@ -91,6 +100,12 @@ timezone = "Asia/Ho_Chi_Minh"
 
 优先级为：明确传入的 CLI 参数、用户专属配置、命令全局配置、内置默认值。
 相对的 `output_root` 从配置文件所在目录开始解析。
+
+`homemonitor` 使用 `[[users]]`、`output_root`、下载命名配置，以及
+`[monitor].browser` 和 `[monitor].download`。它默认每 **120 秒**检查一次，
+默认显示浏览器窗口；通过 `--check-interval` 和 `--headless` 修改。
+`[monitor]` 中的 `check_interval_seconds`、`live_interval_seconds` 和 `headless`
+只用于原有 `monitor` 命令。目前没有 `[homemonitor]` 配置段。
 
 ## 使用说明
 
@@ -156,10 +171,10 @@ BroadcastX **自动修正手机旋转方向**：如果直播 HLS 流中包含方
 `<output_root>/<user>/photos/`。已存在文件直接跳过，不覆盖。
 `/video/N` 链接也会下载整条推文的全部视频。
 
-`--from` 支持混合 URL 数组或 `{"url": "..."}` 对象数组。非法链接、无原生视频、
+`--from` 支持混合 URL 数组或 `{"url": "..."}` 对象数组。
 纯图片 Post URL 会被自动解析并下载其中属于该 Post 的全部照片。混合媒体 Post
 先下载全部视频，再下载全部照片，并将所有文件放在同一个结果中。
-权限不足等情况会明确报告失败，并继续其他下载；任何失败使命令返回非零退出码，
+非法链接、无原生媒体或权限不足等情况会明确报告失败，并继续其他下载；任何失败使命令返回非零退出码，
 已成功的文件会保留。不跟随外部视频网站链接。直播旋转校正保持现有行为，
 普通 Post 不生成旋转侧车文件。monitor 仍仅发现 Broadcast；scan 只有在传入
 `--all` 时才额外发现普通 Post 媒体。
@@ -168,7 +183,47 @@ BroadcastX **自动修正手机旋转方向**：如果直播 HLS 流中包含方
 并按第一次出现的位置去重。默认的 `--parallel 1` 严格按这个顺序逐一下载；使用
 `--parallel N` 时完成提示可能乱序，但返回结果仍保持来源顺序。
 
-### 监控直播
+### 从 X Home 监控直播（推荐）
+
+```bash
+# 监控配置中的全部用户，默认每两分钟检查一次
+broadcastx homemonitor
+
+# 只监控指定用户
+broadcastx homemonitor @SpaceX @NASA
+
+# 单次检测；等待本轮触发的下载完成后退出
+broadcastx homemonitor --once
+
+# 无头模式：读取 Home 页面已有的 fleetline 响应
+broadcastx homemonitor --headless
+
+# 修改检查间隔，或只检测不下载
+broadcastx homemonitor --check-interval 180
+broadcastx homemonitor @username --no-download
+
+# 使用其他配置文件中的用户和 output_root
+broadcastx homemonitor --config ./archive.toml
+```
+
+首次使用请先以可见模式运行，按提示登录 X。会话保存在
+`~/.broadcastx/chrome-profile/`；无头模式需要已有的登录会话。
+可见模式打开 **Live on X** 中的 Broadcast 卡片，无头模式读取 Home 的
+`fleetline` 响应，两者都忽略 Spaces，再按配置或 CLI 指定的用户筛选。
+指定用户名不会强制 X 在 Home 展示该用户，因此发现范围受当前账号的 Home 列表限制。
+
+新发现的直播链接会显示在终端，并记录到 `output/homemonitor_events.json`。
+活动直播链接原子保存到 `output/homemonitor_state.json`，重启后可以恢复。
+某个链接从一次成功加载的列表中消失时，立即触发下载，不再额外确认直播是否结束。
+下载使用对应用户的命名配置，保存到 `output/<用户名>/videos/`。
+Home 检查未完成或下载失败时保留状态；下载成功后才清除，使用 `--no-download`
+时则在链接消失后清除。检测相关的 HTTP 429 会使进程停止；无关的
+`ViewerBadgeCounts` 429 只报告并忽略。每轮检查后关闭临时浏览器。
+
+### 扫描个人主页监控直播（备选）
+
+原有命令继续支持。日常使用推荐 `homemonitor`；需要直接扫描个人主页、
+不依赖 Home 展示范围时，可以使用 `monitor`。
 
 ```bash
 # 监控单个用户
@@ -211,6 +266,8 @@ broadcastx monitor @username --no-download
 
 ```
 output/
+├── homemonitor_events.json
+├── homemonitor_state.json
 ├── alice/
 │   ├── broadcasts.json
 │   ├── monitor_events.json
@@ -228,8 +285,8 @@ output/
 broadcastx scan @username
 broadcastx download --from output/username/broadcasts.json
 
-# 监控并自动下载
-broadcastx monitor @username --output-dir ./archive
+# 推荐：监控并自动下载（输出根目录取自配置中的 output_root）
+broadcastx homemonitor @username
 
 ```
 

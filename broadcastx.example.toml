@@ -5,6 +5,9 @@
 output_root = "output"
 
 [monitor]
+# homemonitor shares browser and download settings below. Its check interval
+# defaults to 120 seconds; use homemonitor --check-interval to override it.
+# These interval and headless settings apply only to the profile-based monitor.
 check_interval_seconds = 1800
 live_interval_seconds = 300
 browser = "chrome"

@@ -150,7 +150,7 @@ def monitor(usernames, config_file, check_interval, live_interval, output, outpu
 @click.option("--output", "-o", default=None, help="Home monitor event JSON file path")
 @click.option("--browser", "-b", default=None, help="Browser for yt-dlp cookies")
 @click.option("--headless/--no-headless", default=None, help="Run browser headless")
-@click.option("--download/--no-download", default=None, help="Download after an ended Home broadcast is confirmed")
+@click.option("--download/--no-download", default=None, help="Download when a previously seen broadcast disappears from Home")
 @click.option("--once", is_flag=True, help="Run one Home detection cycle")
 def homemonitor(usernames, config_file, check_interval, output, browser, headless, download, once):
     """Monitor the Home 'Live on X' area without visiting user profiles.

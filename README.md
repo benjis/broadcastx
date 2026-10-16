@@ -4,14 +4,14 @@
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/) [![PyPI](https://img.shields.io/pypi/v/broadcastx.svg)](https://pypi.org/project/broadcastx/)
 
-Discover, monitor, and download X/Twitter broadcast videos from user timelines.
+Discover, monitor, and download X/Twitter broadcasts and post media.
 
 **BroadcastX** is a CLI tool that helps you:
 
-- **Scan** — Find broadcast links in a user's timeline
-- **Download** — Download broadcast videos with automatic phone-rotation correction
+- **Scan** — Find broadcast links, or include post videos and photos with `--all`
+- **Download** — Download broadcasts with automatic phone-rotation correction, plus post videos and photos
 - **Watermark** — Add customizable text watermarks to videos via ffmpeg
-- **Monitor** — Watch a profile for live broadcasts and auto-download replays
+- **Monitor** — Use `homemonitor` (recommended) to detect broadcasts from X Home and auto-download replays; profile-based `monitor` remains available
 
 ## Features
 
@@ -25,7 +25,16 @@ Downloads broadcast videos via `yt-dlp` and post-processes the video to correct 
 
 ### Monitor
 
-Continuously monitors a user's profile. When a live broadcast is detected, periodically checks its status. When the broadcast ends, automatically downloads the replay.
+Use **`broadcastx homemonitor`** for routine monitoring. It periodically loads
+the logged-in account's Home **Live on X** list and filters broadcasts to your
+selected users, instead of scanning each user's profile. This avoids per-user
+timeline scans and is intended to reduce network traffic, especially for larger
+user lists; no bandwidth benchmark is claimed. When a previously seen broadcast
+disappears from a successfully loaded Home list, it starts downloading the replay.
+
+Discovery depends on what X shows to that account on Home, so it cannot guarantee
+coverage of every selected user. The original **`broadcastx monitor`** remains
+supported for direct profile scanning and separate live-status checks.
 
 ### Watermark
 
@@ -61,11 +70,11 @@ broadcastx scan @username --all
 # Download broadcasts from scan results
 broadcastx download --from output/username/broadcasts.json
 
-# Monitor every user in broadcastx.toml
-broadcastx monitor
-
-# Monitor the single "Live on X" area without visiting user profiles
+# Recommended: monitor every configured user through X Home
 broadcastx homemonitor
+
+# Or monitor a user without a config file
+broadcastx homemonitor @username
 ```
 
 ## Configuration
@@ -100,6 +109,12 @@ timezone = "Asia/Ho_Chi_Minh"
 Explicit CLI options override user settings, which override command-wide
 settings, which override built-in defaults. A relative `output_root` is
 resolved from the config file's directory.
+
+`homemonitor` uses `[[users]]`, `output_root`, download naming settings, and
+`[monitor].browser` / `[monitor].download`. Its interval defaults to **120 seconds**
+and its browser is visible by default: use `--check-interval` and `--headless` to
+change these. `[monitor].check_interval_seconds`, `live_interval_seconds`, and
+`headless` configure only the original `monitor`; there is no `[homemonitor]` section.
 
 ## Usage
 
@@ -179,7 +194,10 @@ second, deduplicating by first occurrence. The default `--parallel 1` processes
 that order strictly. With `--parallel N`, completion output may appear in any
 order, while returned results retain the source order.
 
-### Monitor profiles for live broadcasts
+### Monitor profiles for live broadcasts (alternative)
+
+This original command remains supported. Prefer `homemonitor` for routine use;
+use `monitor` when you need to scan profiles directly rather than rely on Home visibility.
 
 ```bash
 # Monitor a single user
@@ -218,7 +236,7 @@ Multiple users share a single Chromium profile, so you only need to log in once.
 
 Events are logged per user to `output/<username>/monitor_events.json`.
 
-### Monitor Live on X from Home
+### Monitor Live on X from Home (recommended)
 
 ```bash
 # Monitor configured [[users]] from one Home page every two minutes
@@ -230,6 +248,13 @@ broadcastx homemonitor --once
 
 # Use the Home fleetline response when X does not render cards headlessly
 broadcastx homemonitor --headless
+
+# Set the Home check interval, or detect without downloading
+broadcastx homemonitor --check-interval 180
+broadcastx homemonitor @username --no-download
+
+# Read users and output_root from another config file
+broadcastx homemonitor --config ./archive.toml
 ```
 
 `homemonitor` is independent from `monitor`. It loads `https://x.com/home`,
@@ -237,6 +262,11 @@ finds Broadcast entries in **Live on X**, ignores Spaces, and filters them to
 the configured or explicitly supplied users. Visible mode opens the rendered
 Broadcast cards; headless mode reads live-video records from the Home page's
 existing `fleetline` response. Neither mode visits every user profile.
+
+Run visible mode first and log in to X if prompted. The session is stored in
+`~/.broadcastx/chrome-profile/`. Headless mode needs an existing logged-in session.
+Only broadcasts exposed by X on this account's Home list can be detected;
+supplying a username does not force X to include that user's broadcasts.
 
 New Broadcast URLs are printed and logged to
 `output/homemonitor_events.json`. Active links are stored atomically in
@@ -286,6 +316,8 @@ Options:
 
 ```
 output/
+├── homemonitor_events.json
+├── homemonitor_state.json
 ├── alice/
 │   ├── broadcasts.json
 │   ├── monitor_events.json
@@ -303,8 +335,8 @@ output/
 broadcastx scan @username
 broadcastx download --from output/username/broadcasts.json
 
-# Monitor with auto-download
-broadcastx monitor @username --output-dir ./archive
+# Recommended monitoring with auto-download (output_root comes from config)
+broadcastx homemonitor @username
 
 # Watermark a downloaded video
 broadcastx watermark ./output/username/videos/*.mp4 --text "broadcastx" --output ./output/username/videos/watermarked/
