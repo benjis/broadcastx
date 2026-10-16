@@ -15,7 +15,6 @@ from .downloader import download_broadcast
 from .monitor import (
     _MonitorBrowser,
     _append_event,
-    _check_broadcast_status,
     _log_background_download_error,
     _now_iso,
 )
@@ -319,6 +318,10 @@ async def _collect_home_broadcasts(
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
+            if not fleetline_ready.is_set() and not rate_limited.is_set():
+                from playwright.async_api import TimeoutError
+
+                raise TimeoutError("Home fleetline response was not received; live list is unknown")
 
         if rate_limited.is_set():
             raise HomeRateLimitError(rate_limit_url)
@@ -423,7 +426,7 @@ async def home_monitor(
 
                 if check_succeeded:
                     new_broadcasts, missing_broadcasts = _reconcile_active(active, broadcasts)
-                    # Keep missing broadcasts durable until their ended state and download finish.
+                    # Keep missing broadcasts durable until their download succeeds.
                     for item in missing_broadcasts:
                         active[item.broadcast_id] = item
                     await persist_active()
@@ -437,33 +440,12 @@ async def home_monitor(
                             "detected_at": _now_iso(),
                             "source": "home_live_on_x",
                         })
-                    ended_broadcasts = []
-                    try:
-                        for item in missing_broadcasts:
-                            if item.broadcast_id in downloading:
-                                continue
-                            status = await monitor_browser.check(
-                                _check_broadcast_status,
-                                item.url,
-                                event_path,
-                                item.username,
-                                "home_live_end_check",
-                                item.url,
-                            )
-                            if status is None or not status.is_ended:
-                                continue
-                            ended_broadcasts.append(item)
-                    except HomeRateLimitError as error:
+                    for item in missing_broadcasts:
+                        if item.broadcast_id in downloading:
+                            continue
                         console.print(
-                            f"{_now_iso()} X returned HTTP 429; "
-                            "stopping homemonitor immediately.",
-                            style="red", markup=False,
+                            f"  [cyan]Live absent from Home for @{item.username}:[/cyan] {item.url}"
                         )
-                        console.print(f"  {error.url}", style="red", markup=False)
-                        raise SystemExit(1) from error
-
-                    for item in ended_broadcasts:
-                        console.print(f"  [cyan]Live ended for @{item.username}:[/cyan] {item.url}")
                         _append_event(event_path, {
                             "type": "live_ended",
                             "username": item.username,
@@ -471,6 +453,7 @@ async def home_monitor(
                             "broadcast_id": item.broadcast_id,
                             "ended_at": _now_iso(),
                             "source": "home_live_on_x",
+                            "reason": "absent_from_home",
                         })
                         if download:
                             if item.broadcast_id not in downloading:
@@ -487,8 +470,8 @@ async def home_monitor(
                     await persist_active()
                     if not broadcasts and active:
                         console.print(
-                            f"  [yellow]{len(active)} broadcast(s) absent from Home but not "
-                            "confirmed ended; still tracking.[/yellow]"
+                            f"  [yellow]{len(active)} broadcast(s) absent from Home; "
+                            "download pending or awaiting retry.[/yellow]"
                         )
                     elif not broadcasts:
                         console.print("  [dim]No monitored broadcasts found in Live on X.[/dim]")
@@ -504,6 +487,8 @@ async def home_monitor(
                 console.print(f"{_now_iso()} finished checking Live on X in {elapsed:.1f}s.")
 
                 if once:
+                    if download_tasks:
+                        await asyncio.gather(*download_tasks)
                     return
                 now = asyncio.get_running_loop().time()
                 while next_check <= now:

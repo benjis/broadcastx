@@ -241,10 +241,11 @@ existing `fleetline` response. Neither mode visits every user profile.
 New Broadcast URLs are printed and logged to
 `output/homemonitor_events.json`. Active links are stored atomically in
 `output/homemonitor_state.json`, so they survive a process restart. When a
-link disappears from Home, its Broadcast page must confirm that it ended
-before the replay is downloaded. State is retained after an inconclusive
-check or failed download and cleared only after a successful download (or
-after end confirmation with `--no-download`). Detection-related HTTP 429
+link disappears from a successfully loaded Home list, downloading starts
+immediately without a separate end-status check. State is retained after an
+incomplete Home check or failed download and cleared only after a successful
+download (or when absent with `--no-download`). `--once` waits for downloads
+started in that round to finish. Detection-related HTTP 429
 responses stop the process; X's unrelated `ViewerBadgeCounts` 429 is reported
 and ignored. The temporary browser closes after every check round.
 

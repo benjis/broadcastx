@@ -1,5 +1,7 @@
 import asyncio
+import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -15,8 +17,95 @@ from broadcastx.home_monitor import (
     _load_active_state,
     _reconcile_active,
     _save_active_state,
+    home_monitor,
 )
 from broadcastx.monitor import _MonitorBrowser
+
+
+class HomeMonitorDownloadTests(IsolatedAsyncioTestCase):
+    async def run_missing_round(
+        self, directory, *, success=True, collection_error=None, download_enabled=True,
+        still_live=False,
+    ):
+        item = HomeBroadcast(
+            "alice", "1yxBePLNwWWJN", "https://x.com/i/broadcasts/1yxBePLNwWWJN",
+        )
+        state_path = directory / "homemonitor_state.json"
+        if not state_path.exists():
+            _save_active_state(state_path, {item.broadcast_id: item})
+        browser = Mock(
+            open=AsyncMock(), close=AsyncMock(),
+            check=AsyncMock(return_value=SimpleNamespace(is_ended=False, state="unknown")),
+        )
+        browser.rate_limited = asyncio.Event()
+        manager = Mock(__aenter__=AsyncMock(), __aexit__=AsyncMock(return_value=False))
+        async def finish_download(*_args):
+            await asyncio.sleep(0)
+            return success
+
+        download = AsyncMock(side_effect=finish_download)
+        with patch("playwright.async_api.async_playwright", return_value=manager), patch(
+            "broadcastx.home_monitor._HomeMonitorBrowser", return_value=browser,
+        ), patch(
+            "broadcastx.home_monitor._collect_home_broadcasts",
+            new=AsyncMock(return_value=[item] if still_live else [], side_effect=collection_error),
+        ), patch("broadcastx.home_monitor._download_ended_broadcast", download), patch(
+            "broadcastx.home_monitor.console",
+        ), patch("broadcastx.home_monitor._append_event") as events:
+            await home_monitor(
+                ["alice"], once=True, headless=True, download=download_enabled,
+                app_config=SimpleNamespace(output_root=directory),
+            )
+        return item, browser, download, events, _load_active_state(state_path)
+
+    async def test_missing_broadcast_downloads_without_end_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item, browser, download, events, active = await self.run_missing_round(Path(directory))
+        download.assert_awaited_once()
+        self.assertEqual(download.await_args.args[0], item)
+        browser.check.assert_not_awaited()
+        self.assertEqual(active, {})
+        self.assertEqual(events.call_args.args[1]["reason"], "absent_from_home")
+
+    async def test_failed_download_is_persisted_and_retried_next_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item, _, first_download, _, active = await self.run_missing_round(
+                Path(directory), success=False,
+            )
+            first_download.assert_awaited_once()
+            self.assertEqual(active, {item.broadcast_id: item})
+            _, _, retry_download, _, active = await self.run_missing_round(Path(directory))
+            retry_download.assert_awaited_once()
+            self.assertEqual(active, {})
+
+    async def test_failed_home_check_preserves_state_without_downloading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item, _, download, events, active = await self.run_missing_round(
+                Path(directory), collection_error=Error("Home navigation failed"),
+            )
+        download.assert_not_awaited()
+        events.assert_not_called()
+        self.assertEqual(active, {item.broadcast_id: item})
+
+    async def test_present_broadcast_is_kept_without_downloading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            item, browser, download, events, active = await self.run_missing_round(
+                Path(directory), still_live=True,
+            )
+        download.assert_not_awaited()
+        browser.check.assert_not_awaited()
+        events.assert_not_called()
+        self.assertEqual(active, {item.broadcast_id: item})
+
+    async def test_no_download_clears_missing_broadcast_without_confirmation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, browser, download, events, active = await self.run_missing_round(
+                Path(directory), download_enabled=False,
+            )
+        download.assert_not_awaited()
+        browser.check.assert_not_awaited()
+        self.assertEqual(active, {})
+        self.assertEqual(events.call_args.args[1]["reason"], "absent_from_home")
 
 
 def test_reconcile_active_reports_new_and_missing_transitions():
@@ -75,6 +164,28 @@ def test_active_state_round_trip_supports_process_restart(tmp_path):
 
 
 class CollectHomeBroadcastsTests(IsolatedAsyncioTestCase):
+    async def test_headless_missing_fleetline_is_incomplete_not_empty(self):
+        page = Mock(goto=AsyncMock(return_value=None))
+
+        with self.assertRaisesRegex(Error, "live list is unknown"):
+            await _collect_home_broadcasts(page, {"alice"}, wait_ms=1, use_dom=False)
+        page.remove_listener.assert_called_once()
+
+    async def test_headless_received_empty_fleetline_is_a_complete_check(self):
+        response = Mock(
+            url="https://x.com/i/api/2/fleetline", status=200,
+            json=AsyncMock(return_value={"threads": []}),
+        )
+        page = Mock()
+
+        async def navigate(*_args, **_kwargs):
+            await page.on.call_args.args[1](response)
+
+        page.goto = AsyncMock(side_effect=navigate)
+        self.assertEqual(
+            await _collect_home_broadcasts(page, {"alice"}, wait_ms=1, use_dom=False), [],
+        )
+
     async def test_home_browser_retries_transient_profile_lock(self):
         browser = _HomeMonitorBrowser(None, Path("/tmp/broadcastx-home-test"), True)
         page = Mock()
